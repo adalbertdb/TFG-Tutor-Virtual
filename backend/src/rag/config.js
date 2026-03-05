@@ -15,7 +15,7 @@ module.exports = {
   CHROMA_URL: process.env.CHROMA_URL || "http://localhost:8000",
 
   // Embedding model
-  EMBEDDING_MODEL: process.env.RAG_EMBEDDING_MODEL || "nomic-embed-text",
+  EMBEDDING_MODEL: process.env.RAG_EMBEDDING_MODEL || "nomic-embed-text:latest",
   OLLAMA_EMBED_URL: ollamaBaseUrl,
 
   // LLM URL and model config 
