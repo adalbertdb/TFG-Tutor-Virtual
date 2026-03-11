@@ -18,6 +18,7 @@ const userRoutes = require("./routes/usuarios");
 const ejerciciosRoutes = require("./routes/ejercicios");
 const interaccionesRoutes = require("./routes/interacciones");
 const ollamaChatRoutes = require("./routes/ollamaChatRoutes");
+const ragMiddleware = require("./rag/ragMiddleware");
 const resultadoRoutes = require("./routes/resultados");
 const progresoRoutes = require("./routes/progresoRoutes");
 
@@ -98,6 +99,7 @@ app.use(authRouter);
 app.use("/api/usuarios", userRoutes);
 app.use("/api/ejercicios", ejerciciosRoutes);
 app.use("/api/interacciones", interaccionesRoutes);
+app.use("/api/ollama", ragMiddleware);
 app.use("/api/ollama", ollamaChatRoutes);
 app.use("/api/progreso", progresoRoutes);
 app.use("/api/resultados", resultadoRoutes);
