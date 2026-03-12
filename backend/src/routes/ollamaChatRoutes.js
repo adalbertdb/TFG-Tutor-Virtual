@@ -470,8 +470,8 @@ router.post("/chat/stream", async (req, res) => {
             fullAssistant += piece;
             sseSend(res, { chunk: piece });
           }
-        } catch {
-          // ignorar líneas incompletas / basura
+        } catch (parseErr) {
+          console.error("[Ollama] Malformed chunk:", trimmed);
         }
       }
     });

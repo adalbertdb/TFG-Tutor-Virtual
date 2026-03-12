@@ -1,7 +1,9 @@
 // One-time ingestion script: loads datasets + knowledge graph into ChromaDB and BM25
 
-const fs = require("fs");
 const path = require("path");
+require("dotenv").config({ path: path.join(__dirname, "..", "..", ".env") });
+
+const fs = require("fs");
 const config = require("./config");
 const { generateEmbeddings } = require("./embeddings");
 const { addDocuments } = require("./chromaClient");

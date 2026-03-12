@@ -253,6 +253,7 @@ router.post("/chat/stream", async function (req, res, next) {
 
         logInteraction({
           exerciseNum: exerciseNum, userId: userId,
+          correctAnswer: correctAnswer,
           classification: ragResult.classification, decision: "deterministic_finish",
           query: text, response: finishMsg,
           timing: { total: Date.now() - startTime },
@@ -306,6 +307,7 @@ router.post("/chat/stream", async function (req, res, next) {
       // 15. Log for evaluation
       logInteraction({
         exerciseNum: exerciseNum, userId: userId,
+        correctAnswer: correctAnswer,
         classification: ragResult.classification, decision: ragResult.decision,
         query: text, retrievedDocs: ragResult.sources,
         augmentation: ragResult.augmentation, response: fullResponse,

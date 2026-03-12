@@ -5,7 +5,16 @@ let kgEntries = []; // In-memory knowledge graph (loaded once at startup)
 
 // Load the knowledge graph JSON file into memory
 function loadKG() {
-  const raw = fs.readFileSync(config.KG_PATH, "utf-8");
+  var raw = fs.readFileSync(config.KG_PATH, "utf-8").trim();
+
+  // Handle files that contain comma-separated objects without enclosing []
+  if (raw.charAt(0) !== "[") {
+    raw = "[" + raw + "]";
+  }
+
+  // Remove trailing comma before closing bracket if present
+  raw = raw.replace(/,\s*\]$/, "]");
+
   kgEntries = JSON.parse(raw);
   console.log("Knowledge graph loaded: " + kgEntries.length + " entries");
 }

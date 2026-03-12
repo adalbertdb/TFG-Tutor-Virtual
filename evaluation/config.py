@@ -5,7 +5,7 @@ import os
 # Paths
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
-LOG_DIR = os.path.join(PROJECT_ROOT, "logs", "rag")
+LOG_DIR = os.path.join(PROJECT_ROOT, "backend", "logs", "rag")
 DATASETS_DIR = os.path.join(PROJECT_ROOT, "material-complementario", "llm", "datasets")
 RESULTS_DIR = os.path.join(SCRIPT_DIR, "results")
 

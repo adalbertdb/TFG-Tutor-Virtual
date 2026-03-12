@@ -81,9 +81,9 @@ app.use(
     store: MongoStore.create({ mongoUrl: process.env.MONGODB_URI }),
     cookie: {
       httpOnly: true,
-      // ✅ Si entras por HTTPS (Nginx), la cookie debe ser secure.
-      // Con trust proxy=1, Express lo gestiona bien.
-      secure: true,
+      // ✅ secure=true en producción (HTTPS/Nginx).
+      // En desarrollo local (DEV_BYPASS_AUTH=true), secure=false para que HTTP funcione.
+      secure: process.env.DEV_BYPASS_AUTH !== "true",
       sameSite: "lax",
     },
   })

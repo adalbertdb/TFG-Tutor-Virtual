@@ -1,0 +1,120 @@
+{
+  "numQueries": 10,
+  "k": 3,
+  "meanPrecisionAtK": 0.0,
+  "meanRecallAtK": 0.0,
+  "mapAtK": 0.0,
+  "mrr": 0.0,
+  "perQuery": [
+    {
+      "query": "R1 y R5",
+      "exerciseNum": 1,
+      "classification": "wrong_answer",
+      "precisionAtK": 0.0,
+      "recallAtK": 0.0,
+      "averagePrecision": 0.0,
+      "reciprocalRank": 0.0,
+      "numRetrieved": 3,
+      "numRelevant": 0
+    },
+    {
+      "query": "R1 y R5",
+      "exerciseNum": 1,
+      "classification": "wrong_answer",
+      "precisionAtK": 0.0,
+      "recallAtK": 0.0,
+      "averagePrecision": 0.0,
+      "reciprocalRank": 0.0,
+      "numRetrieved": 3,
+      "numRelevant": 0
+    },
+    {
+      "query": "R1 y R5",
+      "exerciseNum": 1,
+      "classification": "wrong_answer",
+      "precisionAtK": 0.0,
+      "recallAtK": 0.0,
+      "averagePrecision": 0.0,
+      "reciprocalRank": 0.0,
+      "numRetrieved": 3,
+      "numRelevant": 0
+    },
+    {
+      "query": "R1 y R5",
+      "exerciseNum": 1,
+      "classification": "wrong_answer",
+      "precisionAtK": 0.0,
+      "recallAtK": 0.0,
+      "averagePrecision": 0.0,
+      "reciprocalRank": 0.0,
+      "numRetrieved": 3,
+      "numRelevant": 0
+    },
+    {
+      "query": "R1 y R5",
+      "exerciseNum": 1,
+      "classification": "wrong_answer",
+      "precisionAtK": 0.0,
+      "recallAtK": 0.0,
+      "averagePrecision": 0.0,
+      "reciprocalRank": 0.0,
+      "numRetrieved": 3,
+      "numRelevant": 0
+    },
+    {
+      "query": "R1 y R5",
+      "exerciseNum": 1,
+      "classification": "wrong_answer",
+      "precisionAtK": 0.0,
+      "recallAtK": 0.0,
+      "averagePrecision": 0.0,
+      "reciprocalRank": 0.0,
+      "numRetrieved": 3,
+      "numRelevant": 0
+    },
+    {
+      "query": "R1 y R5",
+      "exerciseNum": 1,
+      "classification": "wrong_answer",
+      "precisionAtK": 0.0,
+      "recallAtK": 0.0,
+      "averagePrecision": 0.0,
+      "reciprocalRank": 0.0,
+      "numRetrieved": 3,
+      "numRelevant": 0
+    },
+    {
+      "query": "R1 y R5",
+      "exerciseNum": 1,
+      "classification": "wrong_answer",
+      "precisionAtK": 0.0,
+      "recallAtK": 0.0,
+      "averagePrecision": 0.0,
+      "reciprocalRank": 0.0,
+      "numRetrieved": 3,
+      "numRelevant": 0
+    },
+    {
+      "query": "R1 y R5",
+      "exerciseNum": 1,
+      "classification": "wrong_answer",
+      "precisionAtK": 0.0,
+      "recallAtK": 0.0,
+      "averagePrecision": 0.0,
+      "reciprocalRank": 0.0,
+      "numRetrieved": 3,
+      "numRelevant": 0
+    },
+    {
+      "query": "R1 y R5",
+      "exerciseNum": 1,
+      "classification": "wrong_answer",
+      "precisionAtK": 0.0,
+      "recallAtK": 0.0,
+      "averagePrecision": 0.0,
+      "reciprocalRank": 0.0,
+      "numRetrieved": 3,
+      "numRelevant": 0
+    }
+  ]
+}

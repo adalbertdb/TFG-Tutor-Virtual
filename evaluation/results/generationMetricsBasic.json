@@ -1,0 +1,7 @@
+{
+  "numQueries": 10,
+  "avgResponseLength": 218.1,
+  "socraticRate": 1.0,
+  "avgQuestionWords": 2.5,
+  "guardrailSafeRate": 1.0
+}

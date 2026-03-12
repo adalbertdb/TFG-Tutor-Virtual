@@ -65,6 +65,12 @@ Socratic questions: "¿Qué ocurre con la corriente cuando un componente está c
     if (entry.socraticQuestions) {
       text = text + "Socratic questions: \"" + entry.socraticQuestions + "\"\n";
     }
+    if (entry.acName) {
+      text = text + "Alternative conception: \"" + entry.acName + "\"\n";
+    }
+    if (entry.acDescription) {
+      text = text + "AC description: \"" + entry.acDescription + "\"\n";
+    }
     text = text + "\n";
   }
   return text;

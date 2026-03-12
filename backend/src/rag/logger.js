@@ -37,6 +37,7 @@ function logInteraction(data) {
       augmentation: data.augmentation || "",
       response: data.response || "",
       guardrailTriggered: data.guardrailTriggered || false,
+      correctAnswer: data.correctAnswer || [],
       timing: data.timing || {},
     };
 
