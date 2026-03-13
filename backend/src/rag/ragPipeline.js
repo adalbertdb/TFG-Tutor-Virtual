@@ -4,6 +4,7 @@ const config = require("./config");
 const { classifyQuery, extractResistances, types } = require("./queryClassifier");
 const { hybridSearch } = require("./hybridSearch");
 const { searchKG } = require("./knowledgeGraph");
+const { emitEvent } = require("./ragEventBus");
 const Resultado = require("../models/resultado");
 
 // Format dataset examples as context for the LLM
@@ -246,7 +247,9 @@ function extractKeyEntities(userMessage) {
 // Main pipeline: classifies, retrieves, evaluates quality, and builds augmentation
 async function runPipeline(userMessage, exerciseNum, correctAnswer, userId) {
   // Step A: Classify the query
+  emitEvent("classify_start", "start", { userMessage: userMessage, correctAnswer: correctAnswer });
   const classification = classifyQuery(userMessage, correctAnswer);
+  emitEvent("classify_end", "end", { type: classification.type, resistances: classification.resistances, hasReasoning: classification.hasReasoning, concepts: classification.concepts });
 
   const result = {
     augmentation: "",
@@ -257,13 +260,17 @@ async function runPipeline(userMessage, exerciseNum, correctAnswer, userId) {
 
   // Step B: Route to appropriate retrieval strategy
   if (classification.type === types.greeting) {
+    emitEvent("routing_decision", "end", { classification: classification.type, decision: "no_rag", path: "greeting → no_rag" });
     return result;
   }
 
   if (classification.type === types.dontKnow) {
+    emitEvent("routing_decision", "end", { classification: classification.type, decision: "scaffold", path: "dont_know → scaffold" });
     // Only fetch the most relevant KG concepts for scaffolding (limit to 3 to avoid context overflow)
+    emitEvent("kg_search_start", "start", { concepts: ["serie", "paralelo", "cortocircuito"] });
     const kgResults = searchKG(["serie", "paralelo", "cortocircuito"]);
     const limited = kgResults.slice(0, 3);
+    emitEvent("kg_search_end", "end", { resultCount: limited.length, entries: limited.map(function(e) { return { node1: e.node1, relation: e.relation, node2: e.node2, acName: e.acName || null }; }) });
     result.augmentation = formatClassificationHint(classification, correctAnswer) + formatKGContext(limited);
     result.decision = "scaffold";
     result.sources = limited;
@@ -271,18 +278,25 @@ async function runPipeline(userMessage, exerciseNum, correctAnswer, userId) {
   }
 
   if (classification.type === types.singleWord) {
+    emitEvent("routing_decision", "end", { classification: classification.type, decision: "demand_reasoning", path: "single_word → demand_reasoning" });
     result.augmentation = formatClassificationHint(classification, correctAnswer);
     result.decision = "demand_reasoning";
     return result;
   }
 
   if (classification.type === types.wrongAnswer) {
+    emitEvent("routing_decision", "end", { classification: classification.type, decision: "rag_examples", path: "wrong_answer → rag_examples" });
+    emitEvent("hybrid_search_start", "start", { query: userMessage, exerciseNum: exerciseNum, topK: config.TOP_K_FINAL });
     let datasetResults = await hybridSearch(userMessage, exerciseNum);
+    emitEvent("hybrid_search_end", "end", { resultCount: datasetResults.length, topScore: datasetResults.length > 0 ? datasetResults[0].score : 0 });
 
     // CRAG: if top score is too low, reformulate and retry
     if (datasetResults.length === 0 || datasetResults[0].score < config.MED_THRESHOLD) {
       const reformulated = extractKeyEntities(userMessage);
+      emitEvent("crag_reformulate", "end", { originalQuery: userMessage, topScore: datasetResults.length > 0 ? datasetResults[0].score : 0, threshold: config.MED_THRESHOLD, reformulatedQuery: reformulated });
+      emitEvent("hybrid_search_start", "start", { query: reformulated, exerciseNum: exerciseNum, topK: config.TOP_K_FINAL });
       datasetResults = await hybridSearch(reformulated, exerciseNum);
+      emitEvent("hybrid_search_end", "end", { resultCount: datasetResults.length, topScore: datasetResults.length > 0 ? datasetResults[0].score : 0 });
     }
 
     result.augmentation = formatClassificationHint(classification, correctAnswer) + formatExamples(datasetResults);
@@ -292,7 +306,10 @@ async function runPipeline(userMessage, exerciseNum, correctAnswer, userId) {
   }
 
   if (classification.type === types.correctNoReasoning) {
+    emitEvent("routing_decision", "end", { classification: classification.type, decision: "demand_reasoning", path: "correct_no_reasoning → demand_reasoning" });
+    emitEvent("hybrid_search_start", "start", { query: userMessage, exerciseNum: exerciseNum, topK: config.TOP_K_FINAL });
     const datasetResults = await hybridSearch(userMessage, exerciseNum);
+    emitEvent("hybrid_search_end", "end", { resultCount: datasetResults.length, topScore: datasetResults.length > 0 ? datasetResults[0].score : 0 });
     result.augmentation = formatClassificationHint(classification, correctAnswer) + formatExamples(datasetResults);
     result.decision = "demand_reasoning";
     result.sources = datasetResults;
@@ -300,8 +317,13 @@ async function runPipeline(userMessage, exerciseNum, correctAnswer, userId) {
   }
 
   if (classification.type === types.correctWrongReasoning) {
+    emitEvent("routing_decision", "end", { classification: classification.type, decision: "correct_concept", path: "correct_wrong_reasoning → correct_concept" });
+    emitEvent("hybrid_search_start", "start", { query: userMessage, exerciseNum: exerciseNum, topK: config.TOP_K_FINAL });
     const datasetResults = await hybridSearch(userMessage, exerciseNum);
+    emitEvent("hybrid_search_end", "end", { resultCount: datasetResults.length, topScore: datasetResults.length > 0 ? datasetResults[0].score : 0 });
+    emitEvent("kg_search_start", "start", { concepts: classification.concepts });
     const kgResults = searchKG(classification.concepts);
+    emitEvent("kg_search_end", "end", { resultCount: kgResults.length, entries: kgResults.map(function(e) { return { node1: e.node1, relation: e.relation, node2: e.node2, acName: e.acName || null }; }) });
     result.augmentation = formatClassificationHint(classification, correctAnswer) + formatKGContext(kgResults) + formatExamples(datasetResults);
     result.decision = "correct_concept";
     result.sources = datasetResults.concat(kgResults);
@@ -309,7 +331,10 @@ async function runPipeline(userMessage, exerciseNum, correctAnswer, userId) {
   }
 
   if (classification.type === types.correctGoodReasoning) {
+    emitEvent("routing_decision", "end", { classification: classification.type, decision: "rag_examples", path: "correct_good_reasoning → rag_examples" });
+    emitEvent("hybrid_search_start", "start", { query: userMessage, exerciseNum: exerciseNum, topK: config.TOP_K_FINAL });
     const datasetResults = await hybridSearch(userMessage, exerciseNum);
+    emitEvent("hybrid_search_end", "end", { resultCount: datasetResults.length, topScore: datasetResults.length > 0 ? datasetResults[0].score : 0 });
     result.augmentation = formatClassificationHint(classification, correctAnswer) + formatExamples(datasetResults);
     result.decision = "rag_examples";
     result.sources = datasetResults;
@@ -317,8 +342,13 @@ async function runPipeline(userMessage, exerciseNum, correctAnswer, userId) {
   }
 
   if (classification.type === types.wrongConcept) {
+    emitEvent("routing_decision", "end", { classification: classification.type, decision: "concept_correction", path: "wrong_concept → concept_correction" });
+    emitEvent("kg_search_start", "start", { concepts: classification.concepts });
     const kgResults = searchKG(classification.concepts);
+    emitEvent("kg_search_end", "end", { resultCount: kgResults.length, entries: kgResults.map(function(e) { return { node1: e.node1, relation: e.relation, node2: e.node2, acName: e.acName || null }; }) });
+    emitEvent("hybrid_search_start", "start", { query: userMessage, exerciseNum: exerciseNum, topK: config.TOP_K_FINAL });
     const datasetResults = await hybridSearch(userMessage, exerciseNum);
+    emitEvent("hybrid_search_end", "end", { resultCount: datasetResults.length, topScore: datasetResults.length > 0 ? datasetResults[0].score : 0 });
     result.augmentation = formatClassificationHint(classification, correctAnswer) + formatKGContext(kgResults) + formatExamples(datasetResults);
     result.decision = "concept_correction";
     result.sources = datasetResults.concat(kgResults);
@@ -338,7 +368,9 @@ async function runFullPipeline(userMessage, exerciseNum, correctAnswer, userId) 
   }
 
   // Load student's past errors and append
+  emitEvent("student_history_start", "start", { userId: userId });
   const history = await loadStudentHistory(userId);
+  emitEvent("student_history_end", "end", { hasHistory: history.length > 0, historyPreview: history.substring(0, 200) });
   if (history.length > 0) {
     result.augmentation += history;
   }
@@ -352,6 +384,8 @@ async function runFullPipeline(userMessage, exerciseNum, correctAnswer, userId) 
   result.augmentation += "4. NO reveles estados de resistencias (cortocircuitada, abierto), posiciones de interruptores, ni conexiones entre nudos.\n";
   result.augmentation += "5. Haz UNA sola pregunta socrática sobre un CONCEPTO, no sobre un componente.\n";
   result.augmentation += "6. Si el alumno muestra una AC (concepción alternativa), céntrate en cuestionar ESE concepto.\n";
+
+  emitEvent("augmentation_built", "end", { augmentationLength: result.augmentation.length, decision: result.decision, sections: ["hint", history.length > 0 ? "history" : null, result.sources.length > 0 ? "examples" : null].filter(Boolean) });
 
   return result;
 }

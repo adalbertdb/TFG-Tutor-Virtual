@@ -4,6 +4,7 @@ const config = require("./config");
 const { generateEmbedding } = require("./embeddings");
 const { searchSemantic } = require("./chromaClient");
 const { searchBM25 } = require("./bm25");
+const { emitEvent } = require("./ragEventBus");
 
 /*----------------------------------------------------------------------------------------------
   Reciprocal Rank Fusion (RRF):
@@ -14,14 +15,23 @@ const { searchBM25 } = require("./bm25");
 // Hybrid search for an exercise -> Returns top results sorted by combined score (highest first)
 async function hybridSearch(query, exerciseNum, topK = config.TOP_K_FINAL) {
   // 1. Generate query embedding for semantic search
+  emitEvent("embedding_start", "start", { query: query, model: config.EMBEDDING_MODEL });
+  var embedStart = Date.now();
   const queryEmbedding = await generateEmbedding(query);
+  emitEvent("embedding_end", "end", { vectorDimensions: queryEmbedding.length, durationMs: Date.now() - embedStart });
 
   // 2. Run both searches
   const collectionName = "exercise_" + exerciseNum;
+  emitEvent("bm25_search_start", "start", { query: query, exerciseNum: exerciseNum, topK: config.TOP_K_RETRIEVAL, k1: config.BM25_K1, b: config.BM25_B });
   const bm25Results = searchBM25(query, exerciseNum);
+  emitEvent("bm25_search_end", "end", { resultCount: bm25Results.length, topScore: bm25Results.length > 0 ? bm25Results[0].score : 0, results: bm25Results.slice(0, 3).map(function(r) { return { index: r.index, score: r.score }; }) });
+
+  emitEvent("semantic_search_start", "start", { collectionName: collectionName, topK: config.TOP_K_RETRIEVAL, embeddingDim: queryEmbedding.length });
   const semanticResults = await searchSemantic(queryEmbedding, collectionName);
+  emitEvent("semantic_search_end", "end", { resultCount: semanticResults.length, topScore: semanticResults.length > 0 ? semanticResults[0].score : 0, results: semanticResults.slice(0, 3).map(function(r) { return { id: r.id, score: r.score }; }) });
 
   // 3. Build RRF score map using document index as key
+  emitEvent("rrf_fusion_start", "start", { bm25Count: bm25Results.length, semanticCount: semanticResults.length, RRF_K: config.RRF_K, TOP_K_FINAL: topK });
   const rrfScores = {};
 
   // Add BM25 ranks
@@ -62,7 +72,9 @@ async function hybridSearch(query, exerciseNum, topK = config.TOP_K_FINAL) {
   }
 
   results.sort((a, b) => b.score - a.score);
-  return results.slice(0, topK);
+  var finalResults = results.slice(0, topK);
+  emitEvent("rrf_fusion_end", "end", { resultCount: finalResults.length, topScore: finalResults.length > 0 ? finalResults[0].score : 0, formula: "1/(K+rank_bm25) + 1/(K+rank_semantic)" });
+  return finalResults;
 }
 
 module.exports = { hybridSearch };

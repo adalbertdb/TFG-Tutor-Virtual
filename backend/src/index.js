@@ -19,6 +19,7 @@ const ejerciciosRoutes = require("./routes/ejercicios");
 const interaccionesRoutes = require("./routes/interacciones");
 const ollamaChatRoutes = require("./routes/ollamaChatRoutes");
 const ragMiddleware = require("./rag/ragMiddleware");
+const { setupWorkflowSocket } = require("./rag/workflowSocket");
 const resultadoRoutes = require("./routes/resultados");
 const progresoRoutes = require("./routes/progresoRoutes");
 
@@ -36,7 +37,10 @@ app.set("trust proxy", 1);
 // ====== CORS ======
 app.use(
   cors({
-    origin: process.env.FRONTEND_BASE_URL || "http://localhost:5173",
+    origin: [
+      process.env.FRONTEND_BASE_URL || "http://localhost:5173",
+      process.env.WORKFLOW_BASE_URL || "http://localhost:5174",
+    ],
     credentials: true,
   })
 );
@@ -132,7 +136,7 @@ app.get(/^\/(?!api\/|static\/).*/, (req, res) => {
 });
 
 // ====== Arranque servidor HTTP interno (Nginx hará HTTPS fuera) ======
-app.listen(port, "0.0.0.0", () => {
+const server = app.listen(port, "0.0.0.0", () => {
   console.log(`✅ Backend (HTTP interno) escuchando en puerto ${port}`);
 
   // Warmup Ollama (no bloquea)
@@ -173,3 +177,5 @@ app.listen(port, "0.0.0.0", () => {
 
   warmupOllamaUPV();
 });
+
+setupWorkflowSocket(server);

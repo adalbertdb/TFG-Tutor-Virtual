@@ -1,0 +1,11 @@
+@import "tailwindcss";
+
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  font-family: ui-monospace, Consolas, "Courier New", monospace;
+  background: #0f172a;
+  color: #e2e8f0;
+}

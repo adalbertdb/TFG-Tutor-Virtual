@@ -13,9 +13,12 @@ const { checkSolutionLeak, getStrongerInstruction, checkFalseConfirmation, getFa
 const { loadKG } = require("./knowledgeGraph");
 const { loadIndex } = require("./bm25");
 const { logInteraction } = require("./logger");
+const { setRequestId, emitEvent } = require("./ragEventBus");
 const { buildTutorSystemPrompt } = require("../utils/promptBuilder");
 const Ejercicio = require("../models/ejercicio");
 const Interaccion = require("../models/interaccion");
+
+let requestCounter = 0;
 
 const router = express.Router();
 const httpsAgent = new https.Agent({ rejectUnauthorized: false });
@@ -161,6 +164,8 @@ router.post("/chat/stream", async function (req, res, next) {
   }
 
   const startTime = Date.now();
+  requestCounter++;
+  setRequestId("req_" + requestCounter + "_" + Date.now());
 
   try {
     // 1. Extract and validate inputs
@@ -173,6 +178,8 @@ router.post("/chat/stream", async function (req, res, next) {
     if (!exerciseId || !mongoose.Types.ObjectId.isValid(exerciseId)) return next();
     if (typeof userMessage !== "string" || userMessage.trim() === "") return next();
 
+    emitEvent("request_start", "start", { userId: userId, exerciseId: exerciseId, userMessage: userMessage, interaccionId: interaccionId });
+
     // 2. Load exercise from MongoDB
     var ejercicio = await Ejercicio.findById(exerciseId).lean();
     if (ejercicio == null) return next();
@@ -183,16 +190,22 @@ router.post("/chat/stream", async function (req, res, next) {
     var correctAnswer = getCorrectAnswer(ejercicio);
     if (correctAnswer.length === 0) return next();
 
+    emitEvent("exercise_loaded", "end", { exerciseNum: exerciseNum, titulo: ejercicio.titulo, correctAnswer: correctAnswer });
+
     // Use canonical exercise number for retrieval (exercise 2 → 1 in ChromaDB)
     var searchNum = canonicalExercise[exerciseNum] || exerciseNum;
 
     // 3. Run RAG pipeline
+    emitEvent("pipeline_start", "start", { userMessage: userMessage.trim(), exerciseNum: searchNum, correctAnswer: correctAnswer, userId: userId });
     var pipelineStart = Date.now();
     var ragResult = await runFullPipeline(userMessage.trim(), searchNum, correctAnswer, userId);
     var pipelineTime = Date.now() - pipelineStart;
+    emitEvent("pipeline_end", "end", { decision: ragResult.decision, classification: ragResult.classification, augmentationLength: (ragResult.augmentation || "").length, sourcesCount: (ragResult.sources || []).length, pipelineTimeMs: pipelineTime });
 
     // If no RAG needed (greeting, etc.), fall through to original handler
     if (ragResult.decision === "no_rag") {
+      emitEvent("no_rag", "end", { reason: "greeting or non-RAG classification" });
+      emitEvent("request_end", "end", { totalTimeMs: Date.now() - startTime });
       return next();
     }
 
@@ -252,6 +265,7 @@ router.post("/chat/stream", async function (req, res, next) {
         if (ragResult.classification === "correct_good_reasoning"
           || (ragResult.classification === "correct_no_reasoning" && hasConversation)) {
           // Student gave correct answer and has been reasoning (or gave reasoning now) → finish
+          emitEvent("deterministic_finish", "end", { classification: ragResult.classification, historyLength: prevHistory.length, finished: true });
           var finishMsg = "¡Correcto! Has identificado bien las resistencias. ¿Te ha quedado alguna duda sobre el ejercicio?" + FIN_TOKEN;
           sseSend(res, { chunk: finishMsg });
 
@@ -260,6 +274,7 @@ router.post("/chat/stream", async function (req, res, next) {
             { $push: { conversacion: { role: "assistant", content: finishMsg } }, $set: { fin: new Date() } }
           );
 
+          emitEvent("mongodb_save", "end", { interaccionId: iid, messagesAdded: 2 });
           endSSE(res, hb);
 
           logInteraction({
@@ -269,18 +284,24 @@ router.post("/chat/stream", async function (req, res, next) {
             query: text, response: finishMsg,
             timing: { total: Date.now() - startTime },
           });
+          emitEvent("log_written", "end", { logPath: "logs/rag/" });
+          emitEvent("response_sent", "end", { responseLength: finishMsg.length, containsFIN: true });
+          emitEvent("request_end", "end", { totalTimeMs: Date.now() - startTime });
           return;
         }
         // correct_no_reasoning without history → fall through to LLM to ask for reasoning
         // correct_wrong_reasoning → fall through to LLM to correct the concept
+        emitEvent("deterministic_finish", "skip", { classification: ragResult.classification, historyLength: prevHistory.length, finished: false });
       }
 
       // 8. Build augmented system prompt (base prompt + RAG context)
       var basePrompt = buildSystemPrompt(ejercicio);
       var augmentedPrompt = basePrompt + "\n\n" + ragResult.augmentation;
+      emitEvent("prompt_built", "end", { systemPromptLength: basePrompt.length, ragAugmentationLength: ragResult.augmentation.length });
 
       // 9. Load conversation history (last N messages)
       var history = await loadHistory(iid);
+      emitEvent("history_loaded", "end", { interaccionId: iid, messageCount: history.length });
 
       var messages = [{ role: "system", content: augmentedPrompt }];
       for (let i = 0; i < history.length; i++) {
@@ -288,16 +309,21 @@ router.post("/chat/stream", async function (req, res, next) {
       }
 
       // 10. Call Ollama (non-streaming so we can check guardrails before sending to client)
+      emitEvent("ollama_call_start", "start", { model: config.OLLAMA_MODEL, temperature: config.OLLAMA_TEMPERATURE, messageCount: messages.length });
+      var ollamaStart = Date.now();
       var fullResponse = await callOllama(messages);
+      emitEvent("ollama_call_end", "end", { responseLength: fullResponse.length, responsePreview: fullResponse.substring(0, 200), durationMs: Date.now() - ollamaStart });
 
       // 11. Guardrail checks: solution leak + false confirmation
       var guardrailTriggered = false;
 
       // 11a. Check if the LLM revealed the solution
       var leakCheck = checkSolutionLeak(fullResponse, correctAnswer);
+      emitEvent("guardrail_leak", "end", { responsePreview: fullResponse.substring(0, 100), correctAnswer: correctAnswer, result: leakCheck });
       if (leakCheck.leaked) {
         guardrailTriggered = true;
         console.log("[RAG] Guardrail triggered (leak): " + leakCheck.details);
+        emitEvent("ollama_retry", "start", { reason: "solution_leak", retryCount: 1 });
 
         var strongerPrompt = augmentedPrompt + getStrongerInstruction();
         var retryMessages = [{ role: "system", content: strongerPrompt }];
@@ -305,13 +331,16 @@ router.post("/chat/stream", async function (req, res, next) {
           retryMessages.push(history[i]);
         }
         fullResponse = await callOllama(retryMessages);
+        emitEvent("ollama_retry", "end", { reason: "solution_leak", responseLength: fullResponse.length });
       }
 
       // 11b. Check if the LLM confirmed a wrong answer as correct
       var confirmCheck = checkFalseConfirmation(fullResponse, ragResult.classification);
+      emitEvent("guardrail_false_confirm", "end", { responsePreview: fullResponse.substring(0, 100), classification: ragResult.classification, result: confirmCheck });
       if (confirmCheck.confirmed) {
         guardrailTriggered = true;
         console.log("[RAG] Guardrail triggered (false confirm): " + confirmCheck.details);
+        emitEvent("ollama_retry", "start", { reason: "false_confirmation", retryCount: 1 });
 
         var confirmPrompt = augmentedPrompt + getFalseConfirmationInstruction();
         var confirmRetry = [{ role: "system", content: confirmPrompt }];
@@ -319,13 +348,16 @@ router.post("/chat/stream", async function (req, res, next) {
           confirmRetry.push(history[i]);
         }
         fullResponse = await callOllama(confirmRetry);
+        emitEvent("ollama_retry", "end", { reason: "false_confirmation", responseLength: fullResponse.length });
       }
 
       // 11c. Check if the LLM reveals the state of a resistance (internal topology info)
       var stateCheck = checkStateReveal(fullResponse);
+      emitEvent("guardrail_state_reveal", "end", { responsePreview: fullResponse.substring(0, 100), result: stateCheck });
       if (stateCheck.revealed) {
         guardrailTriggered = true;
         console.log("[RAG] Guardrail triggered (state reveal): " + stateCheck.details);
+        emitEvent("ollama_retry", "start", { reason: "state_reveal", retryCount: 1 });
 
         var statePrompt = augmentedPrompt + getStateRevealInstruction();
         var stateRetry = [{ role: "system", content: statePrompt }];
@@ -333,16 +365,19 @@ router.post("/chat/stream", async function (req, res, next) {
           stateRetry.push(history[i]);
         }
         fullResponse = await callOllama(stateRetry);
+        emitEvent("ollama_retry", "end", { reason: "state_reveal", responseLength: fullResponse.length });
       }
 
       // 12. Send response to client as SSE
       sseSend(res, { chunk: fullResponse });
+      emitEvent("response_sent", "end", { responseLength: fullResponse.length, responsePreview: fullResponse.substring(0, 200), containsFIN: fullResponse.includes(FIN_TOKEN) });
 
       // 13. Save assistant response to MongoDB
       await Interaccion.updateOne(
         { _id: iid },
         { $push: { conversacion: { role: "assistant", content: fullResponse } }, $set: { fin: new Date() } }
       );
+      emitEvent("mongodb_save", "end", { interaccionId: iid, messagesAdded: 2 });
 
       // 14. Close SSE connection
       endSSE(res, hb);
@@ -357,10 +392,13 @@ router.post("/chat/stream", async function (req, res, next) {
         guardrailTriggered: guardrailTriggered,
         timing: { pipeline: pipelineTime, total: Date.now() - startTime },
       });
+      emitEvent("log_written", "end", { logPath: "logs/rag/" });
+      emitEvent("request_end", "end", { totalTimeMs: Date.now() - startTime, guardrailTriggered: guardrailTriggered });
     } catch (innerErr) {
       // Error after SSE headers were sent → send error event and close
       clearInterval(hb);
       console.error("[RAG] Error:", innerErr.message);
+      emitEvent("request_error", "end", { error: innerErr.message });
       sseSend(res, { error: "Error en el sistema RAG." });
       res.write("data: [DONE]\n\n");
       if (typeof res.flush === "function") res.flush();
@@ -369,6 +407,7 @@ router.post("/chat/stream", async function (req, res, next) {
   } catch (err) {
     // Error before SSE headers → fall through to original handler
     console.error("[RAG] Fallback to original handler:", err.message);
+    emitEvent("request_error", "end", { error: err.message });
     return next();
   }
 });
