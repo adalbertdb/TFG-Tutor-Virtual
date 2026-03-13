@@ -76,16 +76,69 @@ Socratic questions: "¿Qué ocurre con la corriente cuando un componente está c
   return text;
 }
 
+// Analyze each resistance the student mentioned: which are correct, which are wrong
+function analyzeStudentResistances(resistances, correctAnswer) {
+  if (resistances.length === 0) {
+    return "";
+  }
+
+  const correctSet = {};
+  for (let i = 0; i < correctAnswer.length; i++) {
+    correctSet[correctAnswer[i]] = true;
+  }
+
+  const correctOnes = [];
+  const wrongOnes = [];
+  for (let i = 0; i < resistances.length; i++) {
+    if (correctSet[resistances[i]]) {
+      correctOnes.push(resistances[i]);
+    } else {
+      wrongOnes.push(resistances[i]);
+    }
+  }
+
+  // Also find correct resistances the student missed
+  const mentionedSet = {};
+  for (let i = 0; i < resistances.length; i++) {
+    mentionedSet[resistances[i]] = true;
+  }
+  const missed = [];
+  for (let i = 0; i < correctAnswer.length; i++) {
+    if (!mentionedSet[correctAnswer[i]]) {
+      missed.push(correctAnswer[i]);
+    }
+  }
+
+  let text = "[PER-RESISTANCE ANALYSIS] (internal, NEVER reveal to student)\n";
+  text = text + "The student mentioned: " + resistances.join(", ") + ".\n";
+
+  if (correctOnes.length > 0) {
+    text = text + "- CORRECT: " + correctOnes.join(", ") + " ARE in the correct answer.\n";
+  }
+  if (wrongOnes.length > 0) {
+    text = text + "- WRONG: " + wrongOnes.join(", ") + " are NOT in the correct answer.\n";
+  }
+  if (missed.length > 0) {
+    text = text + "- MISSING: The student has not mentioned " + missed.join(", ") + " which ARE in the correct answer.\n";
+  }
+
+  text = text + "CRITICAL: Evaluate EACH resistance independently. If the student says multiple resistances, some may be correct and others wrong. ";
+  text = text + "Do NOT confirm or deny them as a group. ";
+  text = text + "If the student says something correct about one resistance, acknowledge it. ";
+  text = text + "If the student says something wrong about another, guide them to reconsider THAT specific one.\n\n";
+  return text;
+}
+
 // Format classification hint for the LLM
-function formatClassificationHint(classification) {
+function formatClassificationHint(classification, correctAnswer) {
   const hints = {
-    dont_know: "El estudiante dice que no sabe la respuesta. Guíale desde los conceptos básicos.",
-    single_word: "El estudiante ha dado una respuesta muy corta sin razonamiento. Pídele que razone su respuesta.",
-    wrong_answer: "El estudiante ha dado resistencias incorrectas. Guíale con preguntas socráticas.",
-    correct_no_reasoning: "El estudiante ha dado las resistencias correctas pero no ha explicado por qué. Pídele que razone.",
-    correct_wrong_reasoning: "El estudiante ha dado las resistencias correctas pero ha usado un concepto erróneo. Corrige el concepto.",
-    correct_good_reasoning: "El estudiante ha dado las resistencias correctas con buen razonamiento. Aprueba y profundiza.",
-    wrong_concept: "El estudiante ha usado un concepto erróneo. Corrige la confusión con preguntas socráticas.",
+    dont_know: "El estudiante no sabe por dónde empezar. Hazle UNA pregunta sobre un concepto fundamental (ej: '¿Qué condiciones necesita una resistencia para que circule corriente por ella?'). NO menciones resistencias concretas.",
+    single_word: "El estudiante ha dado una respuesta sin razonamiento. Pídele que explique POR QUÉ cree eso. No avances hasta que razone.",
+    wrong_answer: "El estudiante ha dado resistencias incorrectas. Pídele que explique su razonamiento. Si detectas una concepción alternativa (AC), céntrate en cuestionar ESE concepto con una pregunta socrática. NO menciones resistencias concretas ni reveles estados.",
+    correct_no_reasoning: "El estudiante ha acertado pero no ha explicado por qué. Pídele que justifique su respuesta con conceptos de circuitos. NO des por buena la respuesta hasta que razone.",
+    correct_wrong_reasoning: "El estudiante ha acertado pero usa un concepto erróneo. Céntrate en corregir la concepción alternativa con una pregunta socrática sobre el concepto, NO sobre las resistencias.",
+    correct_good_reasoning: "El estudiante ha acertado con buen razonamiento. Confirma brevemente y finaliza.",
+    wrong_concept: "El estudiante muestra una concepción alternativa. Céntrate SOLO en cuestionar ese concepto erróneo con una pregunta socrática. NO guíes hacia resistencias concretas.",
   };
 
   const hint = hints[classification.type];
@@ -102,6 +155,12 @@ function formatClassificationHint(classification) {
   }
 
   text = text + "Follow the reference examples below to guide your response style.\n\n";
+
+  // Add per-resistance analysis when the student mentions specific resistances
+  if (classification.resistances.length > 0 && correctAnswer != null) {
+    text = text + analyzeStudentResistances(classification.resistances, correctAnswer);
+  }
+
   return text;
 }
 
@@ -202,15 +261,17 @@ async function runPipeline(userMessage, exerciseNum, correctAnswer, userId) {
   }
 
   if (classification.type === types.dontKnow) {
-    const kgResults = searchKG(["corriente", "tensión", "circuito", "resistencia"]);
-    result.augmentation = formatClassificationHint(classification) + formatKGContext(kgResults);
+    // Only fetch the most relevant KG concepts for scaffolding (limit to 3 to avoid context overflow)
+    const kgResults = searchKG(["serie", "paralelo", "cortocircuito"]);
+    const limited = kgResults.slice(0, 3);
+    result.augmentation = formatClassificationHint(classification, correctAnswer) + formatKGContext(limited);
     result.decision = "scaffold";
-    result.sources = kgResults;
+    result.sources = limited;
     return result;
   }
 
   if (classification.type === types.singleWord) {
-    result.augmentation = formatClassificationHint(classification);
+    result.augmentation = formatClassificationHint(classification, correctAnswer);
     result.decision = "demand_reasoning";
     return result;
   }
@@ -224,7 +285,7 @@ async function runPipeline(userMessage, exerciseNum, correctAnswer, userId) {
       datasetResults = await hybridSearch(reformulated, exerciseNum);
     }
 
-    result.augmentation = formatClassificationHint(classification) + formatExamples(datasetResults);
+    result.augmentation = formatClassificationHint(classification, correctAnswer) + formatExamples(datasetResults);
     result.decision = "rag_examples";
     result.sources = datasetResults;
     return result;
@@ -232,7 +293,7 @@ async function runPipeline(userMessage, exerciseNum, correctAnswer, userId) {
 
   if (classification.type === types.correctNoReasoning) {
     const datasetResults = await hybridSearch(userMessage, exerciseNum);
-    result.augmentation = formatClassificationHint(classification) + formatExamples(datasetResults);
+    result.augmentation = formatClassificationHint(classification, correctAnswer) + formatExamples(datasetResults);
     result.decision = "demand_reasoning";
     result.sources = datasetResults;
     return result;
@@ -241,7 +302,7 @@ async function runPipeline(userMessage, exerciseNum, correctAnswer, userId) {
   if (classification.type === types.correctWrongReasoning) {
     const datasetResults = await hybridSearch(userMessage, exerciseNum);
     const kgResults = searchKG(classification.concepts);
-    result.augmentation = formatClassificationHint(classification) + formatKGContext(kgResults) + formatExamples(datasetResults);
+    result.augmentation = formatClassificationHint(classification, correctAnswer) + formatKGContext(kgResults) + formatExamples(datasetResults);
     result.decision = "correct_concept";
     result.sources = datasetResults.concat(kgResults);
     return result;
@@ -249,7 +310,7 @@ async function runPipeline(userMessage, exerciseNum, correctAnswer, userId) {
 
   if (classification.type === types.correctGoodReasoning) {
     const datasetResults = await hybridSearch(userMessage, exerciseNum);
-    result.augmentation = formatClassificationHint(classification) + formatExamples(datasetResults);
+    result.augmentation = formatClassificationHint(classification, correctAnswer) + formatExamples(datasetResults);
     result.decision = "rag_examples";
     result.sources = datasetResults;
     return result;
@@ -258,7 +319,7 @@ async function runPipeline(userMessage, exerciseNum, correctAnswer, userId) {
   if (classification.type === types.wrongConcept) {
     const kgResults = searchKG(classification.concepts);
     const datasetResults = await hybridSearch(userMessage, exerciseNum);
-    result.augmentation = formatClassificationHint(classification) + formatKGContext(kgResults) + formatExamples(datasetResults);
+    result.augmentation = formatClassificationHint(classification, correctAnswer) + formatKGContext(kgResults) + formatExamples(datasetResults);
     result.decision = "concept_correction";
     result.sources = datasetResults.concat(kgResults);
     return result;
@@ -282,10 +343,15 @@ async function runFullPipeline(userMessage, exerciseNum, correctAnswer, userId) 
     result.augmentation += history;
   }
 
-  // Append guardrail reminder - reminds the LLM berfore generating a response not to give the solution
+  // Append guardrail reminder
   result.augmentation += "[GUARDRAIL]\n";
-  result.augmentation += "IMPORTANT: You must NEVER reveal the correct answer directly. Do NOT list which resistances ";
-  result.augmentation += "are correct. Instead, guide the student with Socratic questions to discover the answer themselves.\n";
+  result.augmentation += "REGLAS CRÍTICAS PARA TU RESPUESTA:\n";
+  result.augmentation += "1. NO reveles la respuesta correcta ni listes resistencias correctas juntas.\n";
+  result.augmentation += "2. NO confirmes respuestas incorrectas ('Perfecto', 'Correcto', 'Muy bien').\n";
+  result.augmentation += "3. NO nombres resistencias concretas para que el alumno las analice ('¿Qué pasa con R5?', 'Observa R3').\n";
+  result.augmentation += "4. NO reveles estados de resistencias (cortocircuitada, abierto), posiciones de interruptores, ni conexiones entre nudos.\n";
+  result.augmentation += "5. Haz UNA sola pregunta socrática sobre un CONCEPTO, no sobre un componente.\n";
+  result.augmentation += "6. Si el alumno muestra una AC (concepción alternativa), céntrate en cuestionar ESE concepto.\n";
 
   return result;
 }

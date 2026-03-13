@@ -9,7 +9,7 @@ const fs = require("fs");
 const path = require("path");
 const config = require("./config");
 const { runFullPipeline } = require("./ragPipeline");
-const { checkSolutionLeak, getStrongerInstruction } = require("./guardrails");
+const { checkSolutionLeak, getStrongerInstruction, checkFalseConfirmation, getFalseConfirmationInstruction, checkStateReveal, getStateRevealInstruction } = require("./guardrails");
 const { loadKG } = require("./knowledgeGraph");
 const { loadIndex } = require("./bm25");
 const { logInteraction } = require("./logger");
@@ -239,26 +239,40 @@ router.post("/chat/stream", async function (req, res, next) {
         { $push: { conversacion: { role: "user", content: text } }, $set: { fin: new Date() } }
       );
 
-      // 7. Deterministic finish: correct answer with good reasoning → no LLM needed
-      if (ragResult.classification === "correct_good_reasoning") {
-        var finishMsg = "Correcto. Has dado la respuesta exacta." + FIN_TOKEN;
-        sseSend(res, { chunk: finishMsg });
+      // 7. Deterministic finish: correct answer → check if we can finish directly
+      var isCorrect = ragResult.classification === "correct_good_reasoning"
+        || ragResult.classification === "correct_no_reasoning"
+        || ragResult.classification === "correct_wrong_reasoning";
 
-        await Interaccion.updateOne(
-          { _id: iid },
-          { $push: { conversacion: { role: "assistant", content: finishMsg } }, $set: { fin: new Date() } }
-        );
+      if (isCorrect) {
+        // Load history to check if the student has already been reasoning
+        var prevHistory = await loadHistory(iid);
+        var hasConversation = prevHistory.length >= 2; // At least 1 exchange before this
 
-        endSSE(res, hb);
+        if (ragResult.classification === "correct_good_reasoning"
+          || (ragResult.classification === "correct_no_reasoning" && hasConversation)) {
+          // Student gave correct answer and has been reasoning (or gave reasoning now) → finish
+          var finishMsg = "¡Correcto! Has identificado bien las resistencias. ¿Te ha quedado alguna duda sobre el ejercicio?" + FIN_TOKEN;
+          sseSend(res, { chunk: finishMsg });
 
-        logInteraction({
-          exerciseNum: exerciseNum, userId: userId,
-          correctAnswer: correctAnswer,
-          classification: ragResult.classification, decision: "deterministic_finish",
-          query: text, response: finishMsg,
-          timing: { total: Date.now() - startTime },
-        });
-        return;
+          await Interaccion.updateOne(
+            { _id: iid },
+            { $push: { conversacion: { role: "assistant", content: finishMsg } }, $set: { fin: new Date() } }
+          );
+
+          endSSE(res, hb);
+
+          logInteraction({
+            exerciseNum: exerciseNum, userId: userId,
+            correctAnswer: correctAnswer,
+            classification: ragResult.classification, decision: "deterministic_finish",
+            query: text, response: finishMsg,
+            timing: { total: Date.now() - startTime },
+          });
+          return;
+        }
+        // correct_no_reasoning without history → fall through to LLM to ask for reasoning
+        // correct_wrong_reasoning → fall through to LLM to correct the concept
       }
 
       // 8. Build augmented system prompt (base prompt + RAG context)
@@ -276,20 +290,49 @@ router.post("/chat/stream", async function (req, res, next) {
       // 10. Call Ollama (non-streaming so we can check guardrails before sending to client)
       var fullResponse = await callOllama(messages);
 
-      // 11. Guardrail check: if the LLM revealed the solution, regenerate
+      // 11. Guardrail checks: solution leak + false confirmation
       var guardrailTriggered = false;
+
+      // 11a. Check if the LLM revealed the solution
       var leakCheck = checkSolutionLeak(fullResponse, correctAnswer);
       if (leakCheck.leaked) {
         guardrailTriggered = true;
-        console.log("[RAG] Guardrail triggered: " + leakCheck.details);
+        console.log("[RAG] Guardrail triggered (leak): " + leakCheck.details);
 
-        // Regenerate with stronger instruction
         var strongerPrompt = augmentedPrompt + getStrongerInstruction();
         var retryMessages = [{ role: "system", content: strongerPrompt }];
         for (let i = 0; i < history.length; i++) {
           retryMessages.push(history[i]);
         }
         fullResponse = await callOllama(retryMessages);
+      }
+
+      // 11b. Check if the LLM confirmed a wrong answer as correct
+      var confirmCheck = checkFalseConfirmation(fullResponse, ragResult.classification);
+      if (confirmCheck.confirmed) {
+        guardrailTriggered = true;
+        console.log("[RAG] Guardrail triggered (false confirm): " + confirmCheck.details);
+
+        var confirmPrompt = augmentedPrompt + getFalseConfirmationInstruction();
+        var confirmRetry = [{ role: "system", content: confirmPrompt }];
+        for (let i = 0; i < history.length; i++) {
+          confirmRetry.push(history[i]);
+        }
+        fullResponse = await callOllama(confirmRetry);
+      }
+
+      // 11c. Check if the LLM reveals the state of a resistance (internal topology info)
+      var stateCheck = checkStateReveal(fullResponse);
+      if (stateCheck.revealed) {
+        guardrailTriggered = true;
+        console.log("[RAG] Guardrail triggered (state reveal): " + stateCheck.details);
+
+        var statePrompt = augmentedPrompt + getStateRevealInstruction();
+        var stateRetry = [{ role: "system", content: statePrompt }];
+        for (let i = 0; i < history.length; i++) {
+          stateRetry.push(history[i]);
+        }
+        fullResponse = await callOllama(stateRetry);
       }
 
       // 12. Send response to client as SSE
