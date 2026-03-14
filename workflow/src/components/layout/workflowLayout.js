@@ -1,79 +1,264 @@
-// Static node positions and edge definitions for the RAG workflow graph
+// Component Graph layout: UML deployment-style diagram
+// Vertical main spine · orthogonal edge routing · clear corridors between sections
+//
+// Corridor map (vertical gaps where long edges route without crossing nodes):
+//   x ≈ 310-340  left corridor  (between Knowledge Base and Hybrid Search)
+//   x ≈ 810-860  right corridor (between Hybrid Search and Student Context)
+//   y ≈ 390-420  horizontal gap (between Pipeline Core and Retrieval)
+//   y ≈ 760-795  horizontal gap (between Retrieval and Generation)
+//   y ≈ 890-920  horizontal gap (between Generation and Safety)
+//   y ≈ 1035-1065 horizontal gap (between Safety and Output)
 
-export var initialNodes = [
-  // Layer 1 -- Entry & External Services
-  { id: "frontend", position: { x: 50, y: 30 }, type: "externalService", data: { label: "Student (Frontend)", icon: "user" } },
-  { id: "mongodb", position: { x: 900, y: 30 }, type: "externalService", data: { label: "MongoDB Atlas", icon: "database" } },
+// ── Grid constants ──
+var W = 1200;
+var X0 = 30;
+var CX = 420; // center X for main vertical spine
 
-  // Layer 2 -- Middleware & Classification
-  { id: "middleware", position: { x: 50, y: 160 }, type: "pipelineStep", data: { label: "RAG Middleware" } },
-  { id: "classifier", position: { x: 350, y: 160 }, type: "pipelineStep", data: { label: "Query Classifier" } },
-  { id: "orchestrator", position: { x: 650, y: 160 }, type: "pipelineStep", data: { label: "Pipeline Orchestrator" } },
+// Row Y positions
+var R0 = 0;
+var R1 = 115;
+var R2 = 420;
+var R3 = 795;
+var R4 = 920;
+var R5 = 1065;
 
-  // Layer 3 -- Retrieval & Algorithms
-  { id: "knowledge-graph", position: { x: 0, y: 320 }, type: "pipelineStep", data: { label: "Knowledge Graph" } },
-  { id: "embedding", position: { x: 220, y: 320 }, type: "algorithmNode", data: { label: "Embedding Generator" } },
-  { id: "bm25", position: { x: 440, y: 320 }, type: "algorithmNode", data: { label: "BM25 Search" } },
-  { id: "chromadb", position: { x: 660, y: 320 }, type: "externalService", data: { label: "ChromaDB Semantic", icon: "vector" } },
-  { id: "rrf", position: { x: 550, y: 450 }, type: "algorithmNode", data: { label: "RRF Fusion" } },
-  { id: "crag", position: { x: 220, y: 450 }, type: "algorithmNode", data: { label: "CRAG Reformulation" } },
-  { id: "student-history", position: { x: 900, y: 320 }, type: "pipelineStep", data: { label: "Student History" } },
-  { id: "hybrid-search", position: { x: 880, y: 450 }, type: "pipelineStep", data: { label: "Hybrid Search" } },
+// ── SECTION BACKGROUND NODES ──
+var sections = [
+  { id: "sec-external", position: { x: X0, y: R0 }, type: "sectionGroup",
+    data: { label: "External Services", borderColor: "#7c3aed", labelColor: "#c4b5fd", bgColor: "rgba(124, 58, 237, 0.06)" },
+    style: { width: W, height: 85 }, zIndex: -1 },
 
-  // Layer 4 -- Generation & Safety
-  { id: "deterministic", position: { x: 0, y: 580 }, type: "pipelineStep", data: { label: "Deterministic Finish" } },
-  { id: "poligpt", position: { x: 250, y: 580 }, type: "externalService", data: { label: "PoliGPT (Ollama qwen2.5)", icon: "llm" } },
-  { id: "guardrail-leak", position: { x: 500, y: 580 }, type: "guardrailNode", data: { label: "Solution Leak" } },
-  { id: "guardrail-confirm", position: { x: 680, y: 580 }, type: "guardrailNode", data: { label: "False Confirmation" } },
-  { id: "guardrail-state", position: { x: 860, y: 580 }, type: "guardrailNode", data: { label: "State Reveal" } },
+  { id: "sec-pipeline", position: { x: CX - 140, y: R1 }, type: "sectionGroup",
+    data: { label: "Pipeline Core", subtitle: "Request processing, classification & orchestration", borderColor: "#0d9488", labelColor: "#5eead4", bgColor: "rgba(13, 148, 136, 0.07)" },
+    style: { width: 340, height: 270 }, zIndex: -1 },
 
-  // Layer 5 -- Output
-  { id: "response", position: { x: 250, y: 710 }, type: "pipelineStep", data: { label: "Response (SSE)" } },
-  { id: "logger", position: { x: 550, y: 710 }, type: "pipelineStep", data: { label: "JSONL Logger" } },
+  { id: "sec-knowledge", position: { x: 45, y: R2 }, type: "sectionGroup",
+    data: { label: "Knowledge Base", subtitle: "Graph-based concept retrieval", borderColor: "#7c3aed", labelColor: "#c4b5fd", bgColor: "rgba(124, 58, 237, 0.05)" },
+    style: { width: 260, height: 330 }, zIndex: -1 },
 
-  // Data Sources (background)
-  { id: "datasets", position: { x: 440, y: 230 }, type: "externalService", data: { label: "Datasets", icon: "data" } },
-  { id: "kg-data", position: { x: 0, y: 230 }, type: "externalService", data: { label: "KG Data", icon: "data" } },
+  { id: "sec-hybrid", position: { x: 345, y: R2 }, type: "sectionGroup",
+    data: { label: "Hybrid Search Engine", subtitle: "BM25 + Semantic + RRF fusion + CRAG reformulation", borderColor: "#d97706", labelColor: "#fcd34d", bgColor: "rgba(217, 119, 6, 0.05)" },
+    style: { width: 465, height: 330 }, zIndex: -1 },
+
+  { id: "sec-context", position: { x: 860, y: R2 }, type: "sectionGroup",
+    data: { label: "Student Context", subtitle: "Conversation history & personalization", borderColor: "#0369a1", labelColor: "#7dd3fc", bgColor: "rgba(3, 105, 161, 0.05)" },
+    style: { width: 310, height: 330 }, zIndex: -1 },
+
+  { id: "sec-generation", position: { x: X0, y: R3 }, type: "sectionGroup",
+    data: { label: "Generation", subtitle: "Deterministic check + LLM inference (Ollama qwen2.5)", borderColor: "#2563eb", labelColor: "#93c5fd", bgColor: "rgba(37, 99, 235, 0.06)" },
+    style: { width: W, height: 90 }, zIndex: -1 },
+
+  { id: "sec-safety", position: { x: X0, y: R4 }, type: "sectionGroup",
+    data: { label: "Safety Guardrails", subtitle: "Sequential triple-check: leak \u2192 confirm \u2192 state", borderColor: "#dc2626", labelColor: "#fca5a5", bgColor: "rgba(220, 38, 38, 0.05)" },
+    style: { width: W, height: 110 }, zIndex: -1 },
+
+  { id: "sec-output", position: { x: X0, y: R5 }, type: "sectionGroup",
+    data: { label: "Output", subtitle: "Response delivery & interaction logging", borderColor: "#16a34a", labelColor: "#86efac", bgColor: "rgba(22, 163, 74, 0.05)" },
+    style: { width: W, height: 85 }, zIndex: -1 },
 ];
 
+// ── COMPONENT NODES ──
+// Nodes are placed so edges route through corridors, not through other nodes.
+var components = [
+  // ─── External Services ───
+  { id: "frontend", position: { x: CX - 60, y: R0 + 22 }, type: "externalService",
+    data: { label: "Student (Frontend)", icon: "user" } },
+  { id: "mongodb", position: { x: 900, y: R0 + 22 }, type: "externalService",
+    data: { label: "MongoDB Atlas", icon: "database" } },
+
+  // ─── Pipeline Core (vertical spine) ───
+  { id: "middleware", position: { x: CX - 60, y: R1 + 30 }, type: "pipelineStep",
+    data: { label: "RAG Middleware" } },
+  { id: "classifier", position: { x: CX - 60, y: R1 + 115 }, type: "pipelineStep",
+    data: { label: "Query Classifier" } },
+  { id: "orchestrator", position: { x: CX - 60, y: R1 + 195 }, type: "pipelineStep",
+    data: { label: "Pipeline Orchestrator" } },
+
+  // ─── Knowledge Base (left, x 80–250) ───
+  { id: "kg-data", position: { x: 85, y: R2 + 45 }, type: "documentNode",
+    data: { label: "KG Data (JSON)", subtitle: "concepts & relations" } },
+  { id: "knowledge-graph", position: { x: 85, y: R2 + 190 }, type: "pipelineStep",
+    data: { label: "Knowledge Graph" } },
+
+  // ─── Hybrid Search Engine (center, x 380–780) ───
+  { id: "hybrid-search", position: { x: 390, y: R2 + 45 }, type: "pipelineStep",
+    data: { label: "Hybrid Search" } },
+  { id: "datasets", position: { x: 640, y: R2 + 45 }, type: "documentNode",
+    data: { label: "Datasets (CSV)", subtitle: "pre-indexed exercises" } },
+  { id: "embedding", position: { x: 580, y: R2 + 125 }, type: "algorithmNode",
+    data: { label: "Embedding Generator" } },
+  { id: "bm25", position: { x: 390, y: R2 + 200 }, type: "algorithmNode",
+    data: { label: "BM25 Search" } },
+  { id: "chromadb", position: { x: 630, y: R2 + 200 }, type: "externalService",
+    data: { label: "ChromaDB Semantic", icon: "vector" } },
+  { id: "rrf", position: { x: 530, y: R2 + 275 }, type: "algorithmNode",
+    data: { label: "RRF Fusion" } },
+  { id: "crag", position: { x: 380, y: R2 + 275 }, type: "algorithmNode",
+    data: { label: "CRAG Reformulation" } },
+
+  // ─── Student Context (right, x 910+) ───
+  { id: "student-history", position: { x: 910, y: R2 + 115 }, type: "pipelineStep",
+    data: { label: "Student History" } },
+
+  // ─── Generation ───
+  { id: "deterministic", position: { x: 155, y: R3 + 22 }, type: "pipelineStep",
+    data: { label: "Deterministic Finish" } },
+  { id: "poligpt", position: { x: 530, y: R3 + 22 }, type: "externalService",
+    data: { label: "PoliGPT (Ollama qwen2.5)", icon: "llm" } },
+
+  // ─── Safety Guardrails (centered under PoliGPT, sequential) ───
+  { id: "guardrail-leak", position: { x: 340, y: R4 + 30 }, type: "guardrailNode",
+    data: { label: "Solution Leak" } },
+  { id: "guardrail-confirm", position: { x: 555, y: R4 + 30 }, type: "guardrailNode",
+    data: { label: "False Confirmation" } },
+  { id: "guardrail-state", position: { x: 770, y: R4 + 30 }, type: "guardrailNode",
+    data: { label: "State Reveal" } },
+
+  // ─── Output ───
+  { id: "response", position: { x: 380, y: R5 + 20 }, type: "pipelineStep",
+    data: { label: "Response (SSE)" } },
+  { id: "logger", position: { x: 720, y: R5 + 20 }, type: "pipelineStep",
+    data: { label: "JSONL Logger" } },
+];
+
+export var initialNodes = sections.concat(components);
+
+// ── EDGES ──
+// Smooth-step orthogonal routing with lateral handles.
+// Edges route through the designated corridors (see top comment).
+
+function edge(id, source, target, label, extra) {
+  var e = {
+    id: id,
+    source: source,
+    target: target,
+    type: "animated",
+    style: { stroke: "#475569", strokeWidth: 1.5 },
+  };
+  if (label) e.label = label;
+  if (extra) Object.assign(e, extra);
+  return e;
+}
+
 export var initialEdges = [
-  // Layer 1 → 2
-  { id: "e-frontend-middleware", source: "frontend", target: "middleware", type: "animated" },
-  { id: "e-middleware-mongodb-load", source: "middleware", target: "mongodb", type: "animated", label: "load exercise" },
-  { id: "e-middleware-classifier", source: "middleware", target: "classifier", type: "animated" },
-  { id: "e-classifier-orchestrator", source: "classifier", target: "orchestrator", type: "animated" },
+  // ═══════════════════════════════════════
+  // MAIN VERTICAL SPINE (straight down)
+  // ═══════════════════════════════════════
+  edge("e-frontend-middleware", "frontend", "middleware", null,
+    { sourceHandle: "bottom", targetHandle: "top" }),
+  edge("e-middleware-classifier", "middleware", "classifier", null,
+    { sourceHandle: "bottom", targetHandle: "top" }),
+  edge("e-classifier-orchestrator", "classifier", "orchestrator", null,
+    { sourceHandle: "bottom", targetHandle: "top" }),
 
-  // Layer 2 → 3 (conditional)
-  { id: "e-orchestrator-kg", source: "orchestrator", target: "knowledge-graph", type: "animated" },
-  { id: "e-orchestrator-hybrid", source: "orchestrator", target: "hybrid-search", type: "animated" },
-  { id: "e-orchestrator-history", source: "orchestrator", target: "student-history", type: "animated" },
-  { id: "e-hybrid-embedding", source: "hybrid-search", target: "embedding", type: "animated" },
-  { id: "e-embedding-bm25", source: "embedding", target: "bm25", type: "animated" },
-  { id: "e-embedding-chromadb", source: "embedding", target: "chromadb", type: "animated" },
-  { id: "e-bm25-rrf", source: "bm25", target: "rrf", type: "animated" },
-  { id: "e-chromadb-rrf", source: "chromadb", target: "rrf", type: "animated" },
-  { id: "e-rrf-crag", source: "rrf", target: "crag", type: "animated", label: "low score" },
-  { id: "e-crag-embedding", source: "crag", target: "embedding", type: "animated", label: "retry" },
+  // ═══════════════════════════════════════
+  // MIDDLEWARE → MONGODB (horizontal right, above Pipeline Core)
+  // Route: right from MW → up through gap → left into MongoDB
+  // ═══════════════════════════════════════
+  edge("e-middleware-mongodb", "middleware", "mongodb", "load / save",
+    { sourceHandle: "right-source", targetHandle: "left" }),
 
-  // Data sources
-  { id: "e-kgdata-kg", source: "kg-data", target: "knowledge-graph", type: "animated" },
-  { id: "e-datasets-bm25", source: "datasets", target: "bm25", type: "animated" },
-  { id: "e-datasets-chromadb", source: "datasets", target: "chromadb", type: "animated" },
+  // ═══════════════════════════════════════
+  // ORCHESTRATOR FAN-OUT → RETRIEVAL
+  // ═══════════════════════════════════════
+  // Left: through left corridor (x ≈ 320) down to KG
+  edge("e-orchestrator-kg", "orchestrator", "knowledge-graph", "scaffold / concept",
+    { sourceHandle: "left-source", targetHandle: "top" }),
+  // Center: straight down into Hybrid Search
+  edge("e-orchestrator-hybrid", "orchestrator", "hybrid-search", "rag_examples",
+    { sourceHandle: "bottom", targetHandle: "top" }),
+  // Right: horizontal right at y ≈ 335 (above retrieval zone), then down
+  edge("e-orchestrator-history", "orchestrator", "student-history", null,
+    { sourceHandle: "right-source", targetHandle: "top" }),
 
-  // Layer 3 → 4
-  { id: "e-middleware-deterministic", source: "middleware", target: "deterministic", type: "animated" },
-  { id: "e-middleware-poligpt", source: "middleware", target: "poligpt", type: "animated" },
-  { id: "e-poligpt-guardrail-leak", source: "poligpt", target: "guardrail-leak", type: "animated" },
-  { id: "e-poligpt-guardrail-confirm", source: "poligpt", target: "guardrail-confirm", type: "animated" },
-  { id: "e-poligpt-guardrail-state", source: "poligpt", target: "guardrail-state", type: "animated" },
-  { id: "e-guardrail-leak-retry", source: "guardrail-leak", target: "poligpt", type: "animated", label: "retry" },
-  { id: "e-guardrail-confirm-retry", source: "guardrail-confirm", target: "poligpt", type: "animated", label: "retry" },
-  { id: "e-guardrail-state-retry", source: "guardrail-state", target: "poligpt", type: "animated", label: "retry" },
+  // ═══════════════════════════════════════
+  // KNOWLEDGE BASE (vertical, left column)
+  // ═══════════════════════════════════════
+  edge("e-kgdata-kg", "kg-data", "knowledge-graph", null,
+    { sourceHandle: "bottom", targetHandle: "top" }),
 
-  // Layer 4 → 5
-  { id: "e-middleware-response", source: "middleware", target: "response", type: "animated" },
-  { id: "e-middleware-logger", source: "middleware", target: "logger", type: "animated" },
-  { id: "e-response-frontend", source: "response", target: "frontend", type: "animated" },
-  { id: "e-middleware-mongodb-save", source: "middleware", target: "mongodb", type: "animated", label: "save" },
-  { id: "e-history-mongodb", source: "student-history", target: "mongodb", type: "animated" },
+  // ═══════════════════════════════════════
+  // HYBRID SEARCH ENGINE (internal routing)
+  // ═══════════════════════════════════════
+  // Runtime query flow
+  edge("e-hybrid-embedding", "hybrid-search", "embedding", null,
+    { sourceHandle: "right-source", targetHandle: "left" }),
+  edge("e-hybrid-bm25", "hybrid-search", "bm25", null,
+    { sourceHandle: "bottom", targetHandle: "top" }),
+  edge("e-embedding-chromadb", "embedding", "chromadb", null,
+    { sourceHandle: "bottom", targetHandle: "top" }),
+
+  // Pre-indexed data (offline ingest, dashed)
+  edge("e-datasets-bm25", "datasets", "bm25", "pre-indexed",
+    { sourceHandle: "left-source", targetHandle: "right",
+      style: { stroke: "#92400e", strokeWidth: 1, strokeDasharray: "4 4" } }),
+  edge("e-datasets-chromadb", "datasets", "chromadb", "pre-indexed",
+    { sourceHandle: "bottom", targetHandle: "top",
+      style: { stroke: "#92400e", strokeWidth: 1, strokeDasharray: "4 4" } }),
+
+  // Fusion: BM25 and ChromaDB feed into RRF from opposite sides
+  edge("e-bm25-rrf", "bm25", "rrf", null,
+    { sourceHandle: "right-source", targetHandle: "left" }),
+  edge("e-chromadb-rrf", "chromadb", "rrf", null,
+    { sourceHandle: "left-source", targetHandle: "right" }),
+
+  // CRAG reformulation (conditional low score)
+  edge("e-rrf-crag", "rrf", "crag", "low score",
+    { sourceHandle: "left-source", targetHandle: "right" }),
+  edge("e-crag-hybrid", "crag", "hybrid-search", "retry",
+    { sourceHandle: "left-source", targetHandle: "left",
+      style: { stroke: "#f59e0b", strokeWidth: 1.2, strokeDasharray: "6 3" } }),
+
+  // ═══════════════════════════════════════
+  // STUDENT CONTEXT → MONGODB (right corridor, up)
+  // ═══════════════════════════════════════
+  edge("e-history-mongodb", "student-history", "mongodb", "load history",
+    { sourceHandle: "right-source", targetHandle: "right" }),
+
+  // ═══════════════════════════════════════
+  // GENERATION
+  // Left corridor (x ≈ 320) carries MW → Deterministic
+  // ═══════════════════════════════════════
+  edge("e-middleware-deterministic", "middleware", "deterministic", null,
+    { sourceHandle: "left-source", targetHandle: "top" }),
+  edge("e-deterministic-poligpt", "deterministic", "poligpt", "build prompt",
+    { sourceHandle: "right-source", targetHandle: "left" }),
+  // Direct finish shortcut (routes along far-left margin)
+  edge("e-deterministic-response", "deterministic", "response", "finished",
+    { sourceHandle: "left-source", targetHandle: "left",
+      style: { stroke: "#22c55e", strokeWidth: 1.2, strokeDasharray: "6 3" } }),
+
+  // ═══════════════════════════════════════
+  // GUARDRAILS (sequential left → right)
+  // Centered under PoliGPT so forward edges are short
+  // ═══════════════════════════════════════
+  edge("e-poligpt-gleak", "poligpt", "guardrail-leak", null,
+    { sourceHandle: "bottom", targetHandle: "top" }),
+  edge("e-gleak-gconfirm", "guardrail-leak", "guardrail-confirm", "pass",
+    { sourceHandle: "right-source", targetHandle: "left" }),
+  edge("e-gconfirm-gstate", "guardrail-confirm", "guardrail-state", "pass",
+    { sourceHandle: "right-source", targetHandle: "left" }),
+
+  // Retry loops (dashed red, back up to PoliGPT)
+  edge("e-gleak-retry", "guardrail-leak", "poligpt", "retry",
+    { sourceHandle: "top-source", targetHandle: "bottom-target",
+      style: { stroke: "#ef4444", strokeWidth: 1.2, strokeDasharray: "6 3" } }),
+  edge("e-gconfirm-retry", "guardrail-confirm", "poligpt", "retry",
+    { sourceHandle: "top-source", targetHandle: "bottom-target",
+      style: { stroke: "#ef4444", strokeWidth: 1.2, strokeDasharray: "6 3" } }),
+  edge("e-gstate-retry", "guardrail-state", "poligpt", "retry",
+    { sourceHandle: "top-source", targetHandle: "right",
+      style: { stroke: "#ef4444", strokeWidth: 1.2, strokeDasharray: "6 3" } }),
+
+  // ═══════════════════════════════════════
+  // OUTPUT
+  // ═══════════════════════════════════════
+  edge("e-gstate-response", "guardrail-state", "response", "all pass",
+    { sourceHandle: "bottom", targetHandle: "top" }),
+  edge("e-response-logger", "response", "logger", null,
+    { sourceHandle: "right-source", targetHandle: "left" }),
+  // Return to frontend (routes up through left corridor x ≈ 310)
+  edge("e-response-frontend", "response", "frontend", "SSE stream",
+    { sourceHandle: "left-source", targetHandle: "left",
+      style: { stroke: "#22c55e", strokeWidth: 1.2, strokeDasharray: "6 3" } }),
 ];

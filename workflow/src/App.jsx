@@ -11,6 +11,8 @@ import PipelineStepNode from "./components/nodes/PipelineStepNode.jsx";
 import ExternalServiceNode from "./components/nodes/ExternalServiceNode.jsx";
 import AlgorithmNode from "./components/nodes/AlgorithmNode.jsx";
 import GuardrailNode from "./components/nodes/GuardrailNode.jsx";
+import SectionGroupNode from "./components/nodes/SectionGroupNode.jsx";
+import DocumentNode from "./components/nodes/DocumentNode.jsx";
 import AnimatedEdge from "./components/edges/AnimatedEdge.jsx";
 import RequestInfo from "./components/panels/RequestInfo.jsx";
 import EventLog from "./components/panels/EventLog.jsx";
@@ -27,6 +29,8 @@ var nodeTypes = {
   externalService: ExternalServiceNode,
   algorithmNode: AlgorithmNode,
   guardrailNode: GuardrailNode,
+  sectionGroup: SectionGroupNode,
+  documentNode: DocumentNode,
 };
 
 var edgeTypes = {
@@ -117,7 +121,25 @@ export default function App() {
     });
   }, [ws.nodeStates, ws.selectedNode]);
 
+  // Compute dynamic edges with active/used state for conditional animation
+  var edges = useMemo(function () {
+    return initialEdges.map(function (e) {
+      var sourceState = ws.nodeStates[e.source];
+      var targetState = ws.nodeStates[e.target];
+      var ss = sourceState ? sourceState.status : "idle";
+      var ts = targetState ? targetState.status : "idle";
+
+      var isUsed = ss !== "idle" && ts !== "idle";
+      var isActive = ss === "active" || (ss === "completed" && ts === "active");
+
+      return Object.assign({}, e, {
+        data: Object.assign({}, e.data, { isActive: isActive, isUsed: isUsed }),
+      });
+    });
+  }, [ws.nodeStates]);
+
   var onNodeClick = useCallback(function (_event, node) {
+    if (node.type === "sectionGroup") return;
     ws.selectNode(node.id);
   }, [ws.selectNode]);
 
@@ -174,7 +196,7 @@ export default function App() {
           {activeTab === "graph" ? (
             <ReactFlow
               nodes={nodes}
-              edges={initialEdges}
+              edges={edges}
               nodeTypes={nodeTypes}
               edgeTypes={edgeTypes}
               onNodeClick={onNodeClick}
@@ -187,8 +209,8 @@ export default function App() {
             >
               <Background color="#334155" gap={20} size={1} />
               <Controls
-                style={{ background: "#1e293b", border: "1px solid #334155", borderRadius: "6px" }}
-                buttonStyle={{ color: "#94a3b8", background: "#1e293b", border: "none" }}
+                style={{ background: "#ffffff", border: "1px solid #d1d5db", borderRadius: "6px" }}
+                buttonStyle={{ color: "#000000", background: "#ffffff", border: "1px solid #e5e7eb" }}
               />
             {/*  <MiniMap
                 style={{ background: "#1e293b", border: "1px solid #334155" }}

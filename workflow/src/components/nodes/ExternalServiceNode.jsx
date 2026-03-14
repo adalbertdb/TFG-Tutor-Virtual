@@ -38,9 +38,16 @@ export default function ExternalServiceNode({ data, selected }) {
 
   var animation = status === "active" ? "pulse 1.5s ease-in-out infinite" : "none";
 
+  var sideH = { width: "6px", height: "6px", minWidth: "6px", minHeight: "6px", background: colors.border, opacity: 0.3 };
+
   return (
     <div style={{ ...style, animation: animation }}>
-      <Handle type="target" position={Position.Top} style={{ background: colors.border }} />
+      <Handle type="target" position={Position.Top} id="top" style={{ background: colors.border }} />
+      <Handle type="source" position={Position.Top} id="top-source" style={sideH} />
+      <Handle type="target" position={Position.Left} id="left" style={sideH} />
+      <Handle type="source" position={Position.Left} id="left-source" style={sideH} />
+      <Handle type="target" position={Position.Right} id="right" style={sideH} />
+      <Handle type="source" position={Position.Right} id="right-source" style={sideH} />
       <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "4px" }}>
         <span style={{ fontSize: "14px" }}>{icon}</span>
         <span style={{ fontWeight: 600, color: colors.text }}>{data.label}</span>
@@ -50,7 +57,8 @@ export default function ExternalServiceNode({ data, selected }) {
           {renderServicePreview(data.icon, nodeData)}
         </div>
       )}
-      <Handle type="source" position={Position.Bottom} style={{ background: colors.border }} />
+      <Handle type="source" position={Position.Bottom} id="bottom" style={{ background: colors.border }} />
+      <Handle type="target" position={Position.Bottom} id="bottom-target" style={sideH} />
     </div>
   );
 }

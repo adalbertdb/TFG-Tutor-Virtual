@@ -31,9 +31,16 @@ export default function PipelineStepNode({ data, selected }) {
 
   var animation = status === "active" ? "pulse 1.5s ease-in-out infinite" : "none";
 
+  var sideH = { width: "6px", height: "6px", minWidth: "6px", minHeight: "6px", background: colors.border, opacity: 0.3 };
+
   return (
     <div style={{ ...style, animation: animation }}>
-      <Handle type="target" position={Position.Top} style={{ background: colors.border }} />
+      <Handle type="target" position={Position.Top} id="top" style={{ background: colors.border }} />
+      <Handle type="source" position={Position.Top} id="top-source" style={sideH} />
+      <Handle type="target" position={Position.Left} id="left" style={sideH} />
+      <Handle type="source" position={Position.Left} id="left-source" style={sideH} />
+      <Handle type="target" position={Position.Right} id="right" style={sideH} />
+      <Handle type="source" position={Position.Right} id="right-source" style={sideH} />
       <div style={{ fontWeight: 600, color: colors.text, marginBottom: "4px" }}>
         {data.label}
       </div>
@@ -43,7 +50,8 @@ export default function PipelineStepNode({ data, selected }) {
         </div>
       )}
       <div style={{ position: "absolute", top: "4px", right: "6px", width: "6px", height: "6px", borderRadius: "50%", background: colors.border }} />
-      <Handle type="source" position={Position.Bottom} style={{ background: colors.border }} />
+      <Handle type="source" position={Position.Bottom} id="bottom" style={{ background: colors.border }} />
+      <Handle type="target" position={Position.Bottom} id="bottom-target" style={sideH} />
     </div>
   );
 }
