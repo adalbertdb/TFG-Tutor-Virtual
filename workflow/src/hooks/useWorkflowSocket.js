@@ -1,10 +1,10 @@
 // WebSocket hook for connecting to the RAG workflow event bus
-// Manages node states, event log, and current request metadata
+// Manages node states, event log, current request, and request history
 
 import { useState, useEffect, useRef, useCallback } from "react";
 
 // Maps event names to node IDs in the React Flow graph
-const eventToNode = {
+var eventToNode = {
   request_start: "middleware",
   exercise_loaded: "mongodb",
   pipeline_start: "orchestrator",
@@ -45,8 +45,50 @@ const eventToNode = {
   request_error: "middleware",
 };
 
+// Human-readable labels for event names
+export var eventLabels = {
+  request_start: "Request Start",
+  exercise_loaded: "Exercise Loaded (MongoDB)",
+  pipeline_start: "Pipeline Start",
+  pipeline_end: "Pipeline End",
+  no_rag: "No RAG (Pass-through)",
+  classify_start: "Query Classifier (start)",
+  classify_end: "Query Classifier (result)",
+  routing_decision: "Routing Decision",
+  kg_search_start: "Knowledge Graph Search (start)",
+  kg_search_end: "Knowledge Graph Search (result)",
+  hybrid_search_start: "Hybrid Search (start)",
+  hybrid_search_end: "Hybrid Search (result)",
+  embedding_start: "Embedding Generation (start)",
+  embedding_end: "Embedding Generation (result)",
+  bm25_search_start: "BM25 Search (start)",
+  bm25_search_end: "BM25 Search (result)",
+  semantic_search_start: "Semantic Search (start)",
+  semantic_search_end: "Semantic Search (result)",
+  rrf_fusion_start: "RRF Fusion (start)",
+  rrf_fusion_end: "RRF Fusion (result)",
+  crag_reformulate: "CRAG Reformulation",
+  student_history_start: "Student History (start)",
+  student_history_end: "Student History (result)",
+  augmentation_built: "Augmentation Built",
+  deterministic_finish: "Deterministic Finish Check",
+  prompt_built: "Prompt Built",
+  history_loaded: "Conversation History Loaded",
+  ollama_call_start: "PoliGPT LLM Call (start)",
+  ollama_call_end: "PoliGPT LLM Call (result)",
+  guardrail_leak: "Guardrail: Solution Leak",
+  guardrail_false_confirm: "Guardrail: False Confirmation",
+  guardrail_state_reveal: "Guardrail: State Reveal",
+  ollama_retry: "PoliGPT Retry (guardrail)",
+  response_sent: "Response Sent (SSE)",
+  mongodb_save: "MongoDB Save",
+  log_written: "JSONL Log Written",
+  request_end: "Request End",
+  request_error: "Request Error",
+};
+
 // All node IDs used in the graph
-const ALL_NODE_IDS = [
+var ALL_NODE_IDS = [
   "frontend", "middleware", "mongodb", "classifier", "orchestrator",
   "knowledge-graph", "hybrid-search", "embedding", "bm25", "chromadb",
   "rrf", "crag", "student-history", "deterministic", "poligpt",
@@ -68,6 +110,11 @@ export default function useWorkflowSocket(url) {
   var [eventLog, setEventLog] = useState([]);
   var [currentRequest, setCurrentRequest] = useState(null);
   var [selectedNode, setSelectedNode] = useState(null);
+  var [selectedEvent, setSelectedEvent] = useState(null);
+  // Request history: array of completed requests with all their events
+  var [requestHistory, setRequestHistory] = useState([]);
+  // Events buffer for current request (to save into history on request_end)
+  var currentEventsRef = useRef([]);
   var wsRef = useRef(null);
   var retryRef = useRef(0);
 
@@ -101,24 +148,28 @@ export default function useWorkflowSocket(url) {
         return;
       }
 
-      // Add to event log
+      // Buffer event for current request
+      currentEventsRef.current.push(event);
+
+      // Add to global event log
       setEventLog(function (prev) {
         var next = prev.concat(event);
-        if (next.length > 500) next = next.slice(-500);
+        if (next.length > 1000) next = next.slice(-1000);
         return next;
       });
 
-      // Handle request_start: reset all nodes
+      // Handle request_start: reset all nodes, start new request
       if (event.event === "request_start") {
+        currentEventsRef.current = [event];
         setNodeStates(buildIdleStates());
         setCurrentRequest({
           requestId: event.requestId,
           userId: event.data.userId,
           userMessage: event.data.userMessage,
           exerciseId: event.data.exerciseId,
+          interaccionId: event.data.interaccionId,
           startTime: event.timestamp,
         });
-        // Activate frontend node
         setNodeStates(function (prev) {
           return Object.assign({}, prev, {
             frontend: { status: "completed", data: event.data, startTime: event.timestamp, endTime: event.timestamp },
@@ -126,11 +177,22 @@ export default function useWorkflowSocket(url) {
         });
       }
 
-      // Update current request with classification/decision
+      // Update current request metadata
+      if (event.event === "exercise_loaded") {
+        setCurrentRequest(function (prev) {
+          if (!prev) return prev;
+          return Object.assign({}, prev, { exerciseNum: event.data.exerciseNum, correctAnswer: event.data.correctAnswer });
+        });
+      }
       if (event.event === "classify_end") {
         setCurrentRequest(function (prev) {
           if (!prev) return prev;
-          return Object.assign({}, prev, { classification: event.data.type });
+          return Object.assign({}, prev, {
+            classification: event.data.type,
+            resistances: event.data.resistances,
+            hasReasoning: event.data.hasReasoning,
+            concepts: event.data.concepts,
+          });
         });
       }
       if (event.event === "routing_decision") {
@@ -139,10 +201,80 @@ export default function useWorkflowSocket(url) {
           return Object.assign({}, prev, { decision: event.data.decision, path: event.data.path });
         });
       }
-      if (event.event === "request_end") {
+      if (event.event === "ollama_call_end") {
         setCurrentRequest(function (prev) {
           if (!prev) return prev;
-          return Object.assign({}, prev, { totalTimeMs: event.data.totalTimeMs });
+          return Object.assign({}, prev, { llmResponse: event.data.responsePreview, llmDurationMs: event.data.durationMs });
+        });
+      }
+      if (event.event === "response_sent") {
+        setCurrentRequest(function (prev) {
+          if (!prev) return prev;
+          return Object.assign({}, prev, { responsePreview: event.data.responsePreview, containsFIN: event.data.containsFIN });
+        });
+      }
+
+      // Handle request_end: save completed request to history
+      if (event.event === "request_end" || event.event === "request_error") {
+        var finalEvents = currentEventsRef.current.slice();
+        setCurrentRequest(function (prev) {
+          if (!prev) return prev;
+          return Object.assign({}, prev, {
+            totalTimeMs: event.data.totalTimeMs || (event.timestamp - prev.startTime),
+            endTime: event.timestamp,
+            guardrailTriggered: event.data.guardrailTriggered || false,
+          });
+        });
+        // Save to history outside of setCurrentRequest to avoid StrictMode double-invoke
+        setRequestHistory(function (hist) {
+          // Deduplicate by requestId
+          var reqId = event.requestId;
+          for (var h = 0; h < hist.length; h++) {
+            if (hist[h].requestId === reqId) return hist;
+          }
+          var entry = {
+            requestId: reqId,
+            totalTimeMs: event.data.totalTimeMs,
+            endTime: event.timestamp,
+            guardrailTriggered: event.data.guardrailTriggered || false,
+            events: finalEvents,
+          };
+          // Merge metadata from buffered events
+          for (var ei = 0; ei < finalEvents.length; ei++) {
+            var ev = finalEvents[ei];
+            if (ev.event === "request_start") {
+              entry.userId = ev.data.userId;
+              entry.userMessage = ev.data.userMessage;
+              entry.exerciseId = ev.data.exerciseId;
+              entry.interaccionId = ev.data.interaccionId;
+              entry.startTime = ev.timestamp;
+            }
+            if (ev.event === "exercise_loaded") {
+              entry.exerciseNum = ev.data.exerciseNum;
+              entry.correctAnswer = ev.data.correctAnswer;
+            }
+            if (ev.event === "classify_end") {
+              entry.classification = ev.data.type;
+              entry.resistances = ev.data.resistances;
+              entry.hasReasoning = ev.data.hasReasoning;
+              entry.concepts = ev.data.concepts;
+            }
+            if (ev.event === "routing_decision") {
+              entry.decision = ev.data.decision;
+              entry.path = ev.data.path;
+            }
+            if (ev.event === "ollama_call_end") {
+              entry.llmResponse = ev.data.responsePreview;
+              entry.llmDurationMs = ev.data.durationMs;
+            }
+            if (ev.event === "response_sent") {
+              entry.responsePreview = ev.data.responsePreview;
+              entry.containsFIN = ev.data.containsFIN;
+            }
+          }
+          var next = hist.concat(entry);
+          if (next.length > 100) next = next.slice(-100);
+          return next;
         });
       }
 
@@ -158,7 +290,6 @@ export default function useWorkflowSocket(url) {
         if (event.status === "start") {
           newStatus = "active";
         } else if (event.status === "end") {
-          // Special: guardrails show red if triggered
           if (event.event === "guardrail_leak" && event.data.result && event.data.result.leaked) {
             newStatus = "error";
           } else if (event.event === "guardrail_false_confirm" && event.data.result && event.data.result.confirmed) {
@@ -184,7 +315,7 @@ export default function useWorkflowSocket(url) {
         return Object.assign({}, prev, updated);
       });
 
-      // Also mark data source nodes when their consumers activate
+      // Data source nodes
       if (event.event === "kg_search_start") {
         setNodeStates(function (prev) {
           var u = {};
@@ -229,6 +360,9 @@ export default function useWorkflowSocket(url) {
     eventLog: eventLog,
     currentRequest: currentRequest,
     selectedNode: selectedNode,
+    selectedEvent: selectedEvent,
+    requestHistory: requestHistory,
     selectNode: setSelectedNode,
+    selectEvent: setSelectedEvent,
   };
 }

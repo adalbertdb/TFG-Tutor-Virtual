@@ -16,7 +16,9 @@ export default function AlgorithmNode({ data, selected }) {
   var nodeData = data.nodeState ? data.nodeState.data : null;
 
   var style = {
-    border: "2px solid " + colors.border,
+    borderWidth: "2px",
+    borderColor: colors.border,
+    borderStyle: status === "skipped" ? "dashed" : "solid",
     borderRadius: "6px",
     padding: "8px 12px",
     background: colors.bg,
@@ -24,7 +26,6 @@ export default function AlgorithmNode({ data, selected }) {
     fontSize: "11px",
     cursor: "pointer",
     boxShadow: selected ? "0 0 0 2px #f59e0b" : status === "active" ? "0 0 12px " + colors.border : "none",
-    borderStyle: status === "skipped" ? "dashed" : "solid",
     transition: "all 0.3s ease",
   };
 

@@ -26,7 +26,6 @@ export default function RequestInfo({ currentRequest, connected }) {
       gap: "16px",
       padding: "8px 16px",
       background: "#1e293b",
-      borderBottom: "1px solid #334155",
       fontSize: "12px",
       flexShrink: 0,
     }}>

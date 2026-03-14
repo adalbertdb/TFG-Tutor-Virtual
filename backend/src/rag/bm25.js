@@ -103,4 +103,4 @@ function searchBM25(query, exerciseNum, topK = config.TOP_K_RETRIEVAL) {
   return scored.slice(0, topK);
 }
 
-module.exports = { loadIndex, searchBM25 };
+module.exports = { loadIndex, searchBM25, tokenize };

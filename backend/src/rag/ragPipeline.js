@@ -247,9 +247,18 @@ function extractKeyEntities(userMessage) {
 // Main pipeline: classifies, retrieves, evaluates quality, and builds augmentation
 async function runPipeline(userMessage, exerciseNum, correctAnswer, userId) {
   // Step A: Classify the query
-  emitEvent("classify_start", "start", { userMessage: userMessage, correctAnswer: correctAnswer });
+  emitEvent("classify_start", "start", { userMessage: userMessage, correctAnswer: correctAnswer, messageLength: userMessage.length });
   const classification = classifyQuery(userMessage, correctAnswer);
-  emitEvent("classify_end", "end", { type: classification.type, resistances: classification.resistances, hasReasoning: classification.hasReasoning, concepts: classification.concepts });
+  var isCorrectAnswer = classification.resistances.length > 0 && classification.resistances.slice().sort().join(",") === correctAnswer.slice().sort().join(",");
+  emitEvent("classify_end", "end", {
+    type: classification.type,
+    resistances: classification.resistances,
+    hasReasoning: classification.hasReasoning,
+    concepts: classification.concepts,
+    isCorrectAnswer: isCorrectAnswer,
+    resistanceCount: classification.resistances.length,
+    conceptCount: classification.concepts.length,
+  });
 
   const result = {
     augmentation: "",
@@ -270,7 +279,7 @@ async function runPipeline(userMessage, exerciseNum, correctAnswer, userId) {
     emitEvent("kg_search_start", "start", { concepts: ["serie", "paralelo", "cortocircuito"] });
     const kgResults = searchKG(["serie", "paralelo", "cortocircuito"]);
     const limited = kgResults.slice(0, 3);
-    emitEvent("kg_search_end", "end", { resultCount: limited.length, entries: limited.map(function(e) { return { node1: e.node1, relation: e.relation, node2: e.node2, acName: e.acName || null }; }) });
+    emitEvent("kg_search_end", "end", { resultCount: limited.length, entries: limited.map(function(e) { return { node1: e.node1, relation: e.relation, node2: e.node2, acName: e.acName || null, acDescription: e.acDescription || null, expertReasoning: e.expertReasoning || "", socraticQuestions: e.socraticQuestions || "" }; }) });
     result.augmentation = formatClassificationHint(classification, correctAnswer) + formatKGContext(limited);
     result.decision = "scaffold";
     result.sources = limited;
@@ -288,15 +297,15 @@ async function runPipeline(userMessage, exerciseNum, correctAnswer, userId) {
     emitEvent("routing_decision", "end", { classification: classification.type, decision: "rag_examples", path: "wrong_answer → rag_examples" });
     emitEvent("hybrid_search_start", "start", { query: userMessage, exerciseNum: exerciseNum, topK: config.TOP_K_FINAL });
     let datasetResults = await hybridSearch(userMessage, exerciseNum);
-    emitEvent("hybrid_search_end", "end", { resultCount: datasetResults.length, topScore: datasetResults.length > 0 ? datasetResults[0].score : 0 });
+    emitEvent("hybrid_search_end", "end", { resultCount: datasetResults.length, topScore: datasetResults.length > 0 ? Math.round(datasetResults[0].score * 10000) / 10000 : 0, results: datasetResults.map(function(r, i) { return { rank: i + 1, index: r.index, score: Math.round(r.score * 10000) / 10000, student: r.student || "", tutor: r.tutor || "" }; }) });
 
     // CRAG: if top score is too low, reformulate and retry
     if (datasetResults.length === 0 || datasetResults[0].score < config.MED_THRESHOLD) {
       const reformulated = extractKeyEntities(userMessage);
-      emitEvent("crag_reformulate", "end", { originalQuery: userMessage, topScore: datasetResults.length > 0 ? datasetResults[0].score : 0, threshold: config.MED_THRESHOLD, reformulatedQuery: reformulated });
+      emitEvent("crag_reformulate", "end", { originalQuery: userMessage, topScore: datasetResults.length > 0 ? Math.round(datasetResults[0].score * 10000) / 10000 : 0, threshold: config.MED_THRESHOLD, reformulatedQuery: reformulated, reason: "topScore < MED_THRESHOLD (" + config.MED_THRESHOLD + ")", extractedEntities: reformulated.split(" ") });
       emitEvent("hybrid_search_start", "start", { query: reformulated, exerciseNum: exerciseNum, topK: config.TOP_K_FINAL });
       datasetResults = await hybridSearch(reformulated, exerciseNum);
-      emitEvent("hybrid_search_end", "end", { resultCount: datasetResults.length, topScore: datasetResults.length > 0 ? datasetResults[0].score : 0 });
+      emitEvent("hybrid_search_end", "end", { resultCount: datasetResults.length, topScore: datasetResults.length > 0 ? Math.round(datasetResults[0].score * 10000) / 10000 : 0, results: datasetResults.map(function(r, i) { return { rank: i + 1, index: r.index, score: Math.round(r.score * 10000) / 10000, student: r.student || "", tutor: r.tutor || "" }; }) });
     }
 
     result.augmentation = formatClassificationHint(classification, correctAnswer) + formatExamples(datasetResults);
@@ -309,7 +318,7 @@ async function runPipeline(userMessage, exerciseNum, correctAnswer, userId) {
     emitEvent("routing_decision", "end", { classification: classification.type, decision: "demand_reasoning", path: "correct_no_reasoning → demand_reasoning" });
     emitEvent("hybrid_search_start", "start", { query: userMessage, exerciseNum: exerciseNum, topK: config.TOP_K_FINAL });
     const datasetResults = await hybridSearch(userMessage, exerciseNum);
-    emitEvent("hybrid_search_end", "end", { resultCount: datasetResults.length, topScore: datasetResults.length > 0 ? datasetResults[0].score : 0 });
+    emitEvent("hybrid_search_end", "end", { resultCount: datasetResults.length, topScore: datasetResults.length > 0 ? Math.round(datasetResults[0].score * 10000) / 10000 : 0, results: datasetResults.map(function(r, i) { return { rank: i + 1, index: r.index, score: Math.round(r.score * 10000) / 10000, student: r.student || "", tutor: r.tutor || "" }; }) });
     result.augmentation = formatClassificationHint(classification, correctAnswer) + formatExamples(datasetResults);
     result.decision = "demand_reasoning";
     result.sources = datasetResults;
@@ -320,10 +329,10 @@ async function runPipeline(userMessage, exerciseNum, correctAnswer, userId) {
     emitEvent("routing_decision", "end", { classification: classification.type, decision: "correct_concept", path: "correct_wrong_reasoning → correct_concept" });
     emitEvent("hybrid_search_start", "start", { query: userMessage, exerciseNum: exerciseNum, topK: config.TOP_K_FINAL });
     const datasetResults = await hybridSearch(userMessage, exerciseNum);
-    emitEvent("hybrid_search_end", "end", { resultCount: datasetResults.length, topScore: datasetResults.length > 0 ? datasetResults[0].score : 0 });
+    emitEvent("hybrid_search_end", "end", { resultCount: datasetResults.length, topScore: datasetResults.length > 0 ? Math.round(datasetResults[0].score * 10000) / 10000 : 0, results: datasetResults.map(function(r, i) { return { rank: i + 1, index: r.index, score: Math.round(r.score * 10000) / 10000, student: r.student || "", tutor: r.tutor || "" }; }) });
     emitEvent("kg_search_start", "start", { concepts: classification.concepts });
     const kgResults = searchKG(classification.concepts);
-    emitEvent("kg_search_end", "end", { resultCount: kgResults.length, entries: kgResults.map(function(e) { return { node1: e.node1, relation: e.relation, node2: e.node2, acName: e.acName || null }; }) });
+    emitEvent("kg_search_end", "end", { resultCount: kgResults.length, entries: kgResults.map(function(e) { return { node1: e.node1, relation: e.relation, node2: e.node2, acName: e.acName || null, acDescription: e.acDescription || null, expertReasoning: e.expertReasoning || "", socraticQuestions: e.socraticQuestions || "" }; }) });
     result.augmentation = formatClassificationHint(classification, correctAnswer) + formatKGContext(kgResults) + formatExamples(datasetResults);
     result.decision = "correct_concept";
     result.sources = datasetResults.concat(kgResults);
@@ -334,7 +343,7 @@ async function runPipeline(userMessage, exerciseNum, correctAnswer, userId) {
     emitEvent("routing_decision", "end", { classification: classification.type, decision: "rag_examples", path: "correct_good_reasoning → rag_examples" });
     emitEvent("hybrid_search_start", "start", { query: userMessage, exerciseNum: exerciseNum, topK: config.TOP_K_FINAL });
     const datasetResults = await hybridSearch(userMessage, exerciseNum);
-    emitEvent("hybrid_search_end", "end", { resultCount: datasetResults.length, topScore: datasetResults.length > 0 ? datasetResults[0].score : 0 });
+    emitEvent("hybrid_search_end", "end", { resultCount: datasetResults.length, topScore: datasetResults.length > 0 ? Math.round(datasetResults[0].score * 10000) / 10000 : 0, results: datasetResults.map(function(r, i) { return { rank: i + 1, index: r.index, score: Math.round(r.score * 10000) / 10000, student: r.student || "", tutor: r.tutor || "" }; }) });
     result.augmentation = formatClassificationHint(classification, correctAnswer) + formatExamples(datasetResults);
     result.decision = "rag_examples";
     result.sources = datasetResults;
@@ -345,10 +354,10 @@ async function runPipeline(userMessage, exerciseNum, correctAnswer, userId) {
     emitEvent("routing_decision", "end", { classification: classification.type, decision: "concept_correction", path: "wrong_concept → concept_correction" });
     emitEvent("kg_search_start", "start", { concepts: classification.concepts });
     const kgResults = searchKG(classification.concepts);
-    emitEvent("kg_search_end", "end", { resultCount: kgResults.length, entries: kgResults.map(function(e) { return { node1: e.node1, relation: e.relation, node2: e.node2, acName: e.acName || null }; }) });
+    emitEvent("kg_search_end", "end", { resultCount: kgResults.length, entries: kgResults.map(function(e) { return { node1: e.node1, relation: e.relation, node2: e.node2, acName: e.acName || null, acDescription: e.acDescription || null, expertReasoning: e.expertReasoning || "", socraticQuestions: e.socraticQuestions || "" }; }) });
     emitEvent("hybrid_search_start", "start", { query: userMessage, exerciseNum: exerciseNum, topK: config.TOP_K_FINAL });
     const datasetResults = await hybridSearch(userMessage, exerciseNum);
-    emitEvent("hybrid_search_end", "end", { resultCount: datasetResults.length, topScore: datasetResults.length > 0 ? datasetResults[0].score : 0 });
+    emitEvent("hybrid_search_end", "end", { resultCount: datasetResults.length, topScore: datasetResults.length > 0 ? Math.round(datasetResults[0].score * 10000) / 10000 : 0, results: datasetResults.map(function(r, i) { return { rank: i + 1, index: r.index, score: Math.round(r.score * 10000) / 10000, student: r.student || "", tutor: r.tutor || "" }; }) });
     result.augmentation = formatClassificationHint(classification, correctAnswer) + formatKGContext(kgResults) + formatExamples(datasetResults);
     result.decision = "concept_correction";
     result.sources = datasetResults.concat(kgResults);
@@ -370,7 +379,7 @@ async function runFullPipeline(userMessage, exerciseNum, correctAnswer, userId) 
   // Load student's past errors and append
   emitEvent("student_history_start", "start", { userId: userId });
   const history = await loadStudentHistory(userId);
-  emitEvent("student_history_end", "end", { hasHistory: history.length > 0, historyPreview: history.substring(0, 200) });
+  emitEvent("student_history_end", "end", { hasHistory: history.length > 0, historyLength: history.length, historyPreview: history });
   if (history.length > 0) {
     result.augmentation += history;
   }
@@ -385,7 +394,7 @@ async function runFullPipeline(userMessage, exerciseNum, correctAnswer, userId) 
   result.augmentation += "5. Haz UNA sola pregunta socrática sobre un CONCEPTO, no sobre un componente.\n";
   result.augmentation += "6. Si el alumno muestra una AC (concepción alternativa), céntrate en cuestionar ESE concepto.\n";
 
-  emitEvent("augmentation_built", "end", { augmentationLength: result.augmentation.length, decision: result.decision, sections: ["hint", history.length > 0 ? "history" : null, result.sources.length > 0 ? "examples" : null].filter(Boolean) });
+  emitEvent("augmentation_built", "end", { augmentationLength: result.augmentation.length, decision: result.decision, classification: result.classification, sourcesCount: result.sources.length, sections: ["hint", history.length > 0 ? "history" : null, result.sources.length > 0 ? "examples" : null, "guardrail_reminder"].filter(Boolean), augmentationPreview: result.augmentation });
 
   return result;
 }

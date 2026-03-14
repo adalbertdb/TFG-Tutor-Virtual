@@ -190,7 +190,7 @@ router.post("/chat/stream", async function (req, res, next) {
     var correctAnswer = getCorrectAnswer(ejercicio);
     if (correctAnswer.length === 0) return next();
 
-    emitEvent("exercise_loaded", "end", { exerciseNum: exerciseNum, titulo: ejercicio.titulo, correctAnswer: correctAnswer });
+    emitEvent("exercise_loaded", "end", { exerciseNum: exerciseNum, titulo: ejercicio.titulo, correctAnswer: correctAnswer, canonicalExercise: canonicalExercise[exerciseNum] || exerciseNum, datasetFile: config.EXERCISE_DATASET_MAP[exerciseNum] || "unknown" });
 
     // Use canonical exercise number for retrieval (exercise 2 → 1 in ChromaDB)
     var searchNum = canonicalExercise[exerciseNum] || exerciseNum;
@@ -297,11 +297,11 @@ router.post("/chat/stream", async function (req, res, next) {
       // 8. Build augmented system prompt (base prompt + RAG context)
       var basePrompt = buildSystemPrompt(ejercicio);
       var augmentedPrompt = basePrompt + "\n\n" + ragResult.augmentation;
-      emitEvent("prompt_built", "end", { systemPromptLength: basePrompt.length, ragAugmentationLength: ragResult.augmentation.length });
+      emitEvent("prompt_built", "end", { systemPromptLength: basePrompt.length, ragAugmentationLength: ragResult.augmentation.length, totalPromptLength: augmentedPrompt.length, augmentationPreview: ragResult.augmentation });
 
       // 9. Load conversation history (last N messages)
       var history = await loadHistory(iid);
-      emitEvent("history_loaded", "end", { interaccionId: iid, messageCount: history.length });
+      emitEvent("history_loaded", "end", { interaccionId: iid, messageCount: history.length, maxMessages: config.HISTORY_MAX_MESSAGES, messages: history.map(function (m) { return { role: m.role, content: m.content || "" }; }) });
 
       var messages = [{ role: "system", content: augmentedPrompt }];
       for (let i = 0; i < history.length; i++) {
@@ -309,17 +309,17 @@ router.post("/chat/stream", async function (req, res, next) {
       }
 
       // 10. Call Ollama (non-streaming so we can check guardrails before sending to client)
-      emitEvent("ollama_call_start", "start", { model: config.OLLAMA_MODEL, temperature: config.OLLAMA_TEMPERATURE, messageCount: messages.length });
+      emitEvent("ollama_call_start", "start", { model: config.OLLAMA_MODEL, temperature: config.OLLAMA_TEMPERATURE, num_ctx: config.OLLAMA_NUM_CTX, num_predict: config.OLLAMA_NUM_PREDICT, keep_alive: config.OLLAMA_KEEP_ALIVE, messageCount: messages.length, ollamaUrl: config.OLLAMA_CHAT_URL });
       var ollamaStart = Date.now();
       var fullResponse = await callOllama(messages);
-      emitEvent("ollama_call_end", "end", { responseLength: fullResponse.length, responsePreview: fullResponse.substring(0, 200), durationMs: Date.now() - ollamaStart });
+      emitEvent("ollama_call_end", "end", { responseLength: fullResponse.length, responsePreview: fullResponse, durationMs: Date.now() - ollamaStart, reason: "non-streaming (guardrail check)" });
 
       // 11. Guardrail checks: solution leak + false confirmation
       var guardrailTriggered = false;
 
       // 11a. Check if the LLM revealed the solution
       var leakCheck = checkSolutionLeak(fullResponse, correctAnswer);
-      emitEvent("guardrail_leak", "end", { responsePreview: fullResponse.substring(0, 100), correctAnswer: correctAnswer, result: leakCheck });
+      emitEvent("guardrail_leak", "end", { responsePreview: fullResponse, correctAnswer: correctAnswer, result: leakCheck, passed: !leakCheck.leaked, check: "Checks if LLM response reveals the correct answer resistances" });
       if (leakCheck.leaked) {
         guardrailTriggered = true;
         console.log("[RAG] Guardrail triggered (leak): " + leakCheck.details);
@@ -336,7 +336,7 @@ router.post("/chat/stream", async function (req, res, next) {
 
       // 11b. Check if the LLM confirmed a wrong answer as correct
       var confirmCheck = checkFalseConfirmation(fullResponse, ragResult.classification);
-      emitEvent("guardrail_false_confirm", "end", { responsePreview: fullResponse.substring(0, 100), classification: ragResult.classification, result: confirmCheck });
+      emitEvent("guardrail_false_confirm", "end", { responsePreview: fullResponse, classification: ragResult.classification, result: confirmCheck, passed: !confirmCheck.confirmed, check: "Checks if LLM falsely confirms a wrong answer as correct" });
       if (confirmCheck.confirmed) {
         guardrailTriggered = true;
         console.log("[RAG] Guardrail triggered (false confirm): " + confirmCheck.details);
@@ -353,7 +353,7 @@ router.post("/chat/stream", async function (req, res, next) {
 
       // 11c. Check if the LLM reveals the state of a resistance (internal topology info)
       var stateCheck = checkStateReveal(fullResponse);
-      emitEvent("guardrail_state_reveal", "end", { responsePreview: fullResponse.substring(0, 100), result: stateCheck });
+      emitEvent("guardrail_state_reveal", "end", { responsePreview: fullResponse, result: stateCheck, passed: !stateCheck.revealed, check: "Checks if LLM reveals internal resistance states (open/short/topology)" });
       if (stateCheck.revealed) {
         guardrailTriggered = true;
         console.log("[RAG] Guardrail triggered (state reveal): " + stateCheck.details);
@@ -370,7 +370,7 @@ router.post("/chat/stream", async function (req, res, next) {
 
       // 12. Send response to client as SSE
       sseSend(res, { chunk: fullResponse });
-      emitEvent("response_sent", "end", { responseLength: fullResponse.length, responsePreview: fullResponse.substring(0, 200), containsFIN: fullResponse.includes(FIN_TOKEN) });
+      emitEvent("response_sent", "end", { responseLength: fullResponse.length, responsePreview: fullResponse, containsFIN: fullResponse.includes(FIN_TOKEN), guardrailTriggered: guardrailTriggered });
 
       // 13. Save assistant response to MongoDB
       await Interaccion.updateOne(
@@ -392,8 +392,8 @@ router.post("/chat/stream", async function (req, res, next) {
         guardrailTriggered: guardrailTriggered,
         timing: { pipeline: pipelineTime, total: Date.now() - startTime },
       });
-      emitEvent("log_written", "end", { logPath: "logs/rag/" });
-      emitEvent("request_end", "end", { totalTimeMs: Date.now() - startTime, guardrailTriggered: guardrailTriggered });
+      emitEvent("log_written", "end", { logPath: config.LOG_DIR, fields: ["exerciseNum", "userId", "correctAnswer", "classification", "decision", "query", "retrievedDocs", "augmentation", "response", "guardrailTriggered", "timing"] });
+      emitEvent("request_end", "end", { totalTimeMs: Date.now() - startTime, guardrailTriggered: guardrailTriggered, pipelineTimeMs: pipelineTime, llmDurationMs: Date.now() - ollamaStart });
     } catch (innerErr) {
       // Error after SSE headers were sent → send error event and close
       clearInterval(hb);
