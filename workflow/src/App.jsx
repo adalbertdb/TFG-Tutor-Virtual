@@ -1,6 +1,6 @@
 // Main workflow monitor app: React Flow graph + flow diagram + panels + export
 
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback, useRef } from "react";
 import { ReactFlow, Background, Controls, MiniMap } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import "./App.css";
@@ -33,9 +33,77 @@ var edgeTypes = {
   animated: AnimatedEdge,
 };
 
+// Drag handle for resizing panels
+function ResizeHandle({ direction, onMouseDown }) {
+  var isHorizontal = direction === "left" || direction === "right";
+  var cursor = isHorizontal ? "col-resize" : "row-resize";
+
+  var style = {
+    position: "absolute",
+    zIndex: 10,
+    background: "transparent",
+  };
+
+  if (direction === "left") {
+    Object.assign(style, { top: 0, left: -3, width: "6px", height: "100%", cursor: cursor });
+  } else if (direction === "right") {
+    Object.assign(style, { top: 0, right: -3, width: "6px", height: "100%", cursor: cursor });
+  } else if (direction === "top") {
+    Object.assign(style, { top: -3, left: 0, width: "100%", height: "6px", cursor: cursor });
+  }
+
+  return (
+    <div
+      onMouseDown={onMouseDown}
+      style={style}
+      onMouseEnter={function (e) { e.target.style.background = "#3b82f6"; }}
+      onMouseLeave={function (e) { e.target.style.background = "transparent"; }}
+    />
+  );
+}
+
 export default function App() {
   var ws = useWorkflowSocket(WS_URL);
   var [activeTab, setActiveTab] = useState("graph"); // "graph" or "flow"
+
+  // Resizable panel sizes
+  var [eventLogWidth, setEventLogWidth] = useState(340);
+  var [historyWidth, setHistoryWidth] = useState(220);
+  var [detailHeight, setDetailHeight] = useState(240);
+  var dragRef = useRef(null);
+
+  // Generic drag handler
+  var startDrag = useCallback(function (type, startPos, startSize) {
+    dragRef.current = { type: type, startPos: startPos, startSize: startSize };
+
+    function onMouseMove(e) {
+      if (!dragRef.current) return;
+      var d = dragRef.current;
+      if (d.type === "eventLog") {
+        var newW = d.startSize - (e.clientX - d.startPos);
+        setEventLogWidth(Math.max(200, Math.min(600, newW)));
+      } else if (d.type === "history") {
+        var newW2 = d.startSize + (e.clientX - d.startPos);
+        setHistoryWidth(Math.max(150, Math.min(400, newW2)));
+      } else if (d.type === "detail") {
+        var newH = d.startSize - (e.clientY - d.startPos);
+        setDetailHeight(Math.max(100, Math.min(500, newH)));
+      }
+    }
+
+    function onMouseUp() {
+      dragRef.current = null;
+      document.removeEventListener("mousemove", onMouseMove);
+      document.removeEventListener("mouseup", onMouseUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    }
+
+    document.body.style.cursor = (type === "detail") ? "row-resize" : "col-resize";
+    document.body.style.userSelect = "none";
+    document.addEventListener("mousemove", onMouseMove);
+    document.addEventListener("mouseup", onMouseUp);
+  }, []);
 
   // Merge node states into node data for rendering
   var nodes = useMemo(function () {
@@ -93,9 +161,12 @@ export default function App() {
 
       {/* Main area: history + center view + event log */}
       <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
-        {/* Left: Request History */}
+        {/* Left: Request History (resizable) */}
         {ws.requestHistory.length > 0 && (
-          <RequestHistory requestHistory={ws.requestHistory} />
+          <div style={{ width: historyWidth + "px", position: "relative", flexShrink: 0 }}>
+            <RequestHistory requestHistory={ws.requestHistory} />
+            <ResizeHandle direction="right" onMouseDown={function (e) { startDrag("history", e.clientX, historyWidth); }} />
+          </div>
         )}
 
         {/* Center: Graph or Flow Diagram */}
@@ -134,21 +205,28 @@ export default function App() {
               nodeStates={ws.nodeStates}
               currentRequest={ws.currentRequest}
               onSelectNode={ws.selectNode}
+              eventLog={ws.eventLog}
             />
           )}
         </div>
 
-        {/* Right: Event Log */}
-        <EventLog
-          eventLog={ws.eventLog}
-          selectedEvent={ws.selectedEvent}
-          onSelectEvent={ws.selectEvent}
-        />
+        {/* Right: Event Log (resizable) */}
+        <div style={{ width: eventLogWidth + "px", position: "relative", flexShrink: 0 }}>
+          <ResizeHandle direction="left" onMouseDown={function (e) { startDrag("eventLog", e.clientX, eventLogWidth); }} />
+          <EventLog
+            eventLog={ws.eventLog}
+            selectedEvent={ws.selectedEvent}
+            onSelectEvent={ws.selectEvent}
+          />
+        </div>
       </div>
 
-      {/* Bottom: Timing + Node detail */}
+      {/* Bottom: Timing + Node detail (resizable) */}
       <TimingBar nodeStates={ws.nodeStates} currentRequest={ws.currentRequest} />
-      <NodeDetail selectedNode={ws.selectedNode} nodeStates={ws.nodeStates} />
+      <div style={{ height: detailHeight + "px", position: "relative", flexShrink: 0 }}>
+        <ResizeHandle direction="top" onMouseDown={function (e) { startDrag("detail", e.clientY, detailHeight); }} />
+        <NodeDetail selectedNode={ws.selectedNode} nodeStates={ws.nodeStates} />
+      </div>
     </div>
   );
 }

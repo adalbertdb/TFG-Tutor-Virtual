@@ -12,7 +12,63 @@ var flowNodeTypes = {
   flowProcess: FlowProcessNode,
 };
 
-export default function FlowDiagram({ nodeStates, currentRequest, onSelectNode }) {
+// Maps each flow node ID to the specific event(s) that should trigger it.
+// Flow nodes sharing a pipeline nodeId need separate triggering events.
+var flowNodeTriggerEvents = {
+  "f-start": ["request_start"],
+  "f-middleware": ["request_start"],
+  "f-load-exercise": ["exercise_loaded"],
+  "f-classifier": ["classify_start", "classify_end"],
+  "f-classify-decision": ["classify_end"],
+  // Left branches
+  "f-greeting": ["routing_decision"],
+  "f-no-rag": ["no_rag", "routing_decision"],
+  "f-dont-know": ["routing_decision"],
+  "f-kg-scaffold": ["kg_search_start", "kg_search_end"],
+  "f-single-word": ["routing_decision"],
+  // Right branches
+  "f-wrong-answer": ["routing_decision"],
+  "f-hybrid-wrong": ["hybrid_search_start", "hybrid_search_end"],
+  "f-crag-decision": ["crag_reformulate", "hybrid_search_end"],
+  "f-crag-reform": ["crag_reformulate"],
+  "f-correct-no": ["routing_decision"],
+  "f-hybrid-correct-no": ["hybrid_search_start", "hybrid_search_end"],
+  "f-correct-wrong": ["routing_decision"],
+  "f-hybrid-correct-wrong": ["hybrid_search_start", "hybrid_search_end"],
+  "f-correct-good": ["routing_decision"],
+  "f-hybrid-correct-good": ["hybrid_search_start", "hybrid_search_end"],
+  "f-wrong-concept": ["routing_decision"],
+  "f-kg-concept": ["kg_search_start", "kg_search_end"],
+  // Converge
+  "f-student-history": ["student_history_start", "student_history_end"],
+  "f-build-augmentation": ["augmentation_built"],
+  // Deterministic
+  "f-deterministic-decision": ["deterministic_finish"],
+  "f-finish-msg": ["deterministic_finish"],
+  // LLM path
+  "f-build-prompt": ["prompt_built"],
+  "f-load-history": ["history_loaded"],
+  "f-call-llm": ["ollama_call_start", "ollama_call_end"],
+  // Guardrails
+  "f-guardrail-leak": ["guardrail_leak"],
+  "f-retry-leak": ["ollama_retry"],
+  "f-guardrail-confirm": ["guardrail_false_confirm"],
+  "f-retry-confirm": ["ollama_retry"],
+  "f-guardrail-state": ["guardrail_state_reveal"],
+  "f-retry-state": ["ollama_retry"],
+  // Output
+  "f-send-response": ["response_sent"],
+  "f-save-mongodb": ["mongodb_save"],
+  "f-log": ["log_written"],
+  "f-end": ["request_end"],
+  // Hybrid subprocess
+  "f-embed": ["embedding_start", "embedding_end"],
+  "f-bm25": ["bm25_search_start", "bm25_search_end"],
+  "f-semantic": ["semantic_search_start", "semantic_search_end"],
+  "f-rrf": ["rrf_fusion_start", "rrf_fusion_end"],
+};
+
+export default function FlowDiagram({ nodeStates, currentRequest, onSelectNode, eventLog }) {
   // Determine which classification branch is active
   var activeClassification = currentRequest ? currentRequest.classification : null;
   var activeBranchNode = activeClassification ? classificationToFlowNode[activeClassification] : null;
@@ -28,20 +84,63 @@ export default function FlowDiagram({ nodeStates, currentRequest, onSelectNode }
     return allowed;
   }, [activeClassification]);
 
-  // Build set of active flow node IDs based on events received
+  // Build set of events seen in the current request + extract deterministic result
+  var seenEventsResult = useMemo(function () {
+    var seen = {};
+    var detFinished = null; // null = not seen, true = finished, false = continue
+    if (!eventLog || !currentRequest || !currentRequest.requestId) return { seen: seen, detFinished: detFinished };
+    var reqId = currentRequest.requestId;
+    for (var i = 0; i < eventLog.length; i++) {
+      var ev = eventLog[i];
+      if (ev.requestId !== reqId) continue;
+      seen[ev.event] = true;
+      // Extract deterministic finish result directly from the event
+      if (ev.event === "deterministic_finish" && ev.data) {
+        detFinished = ev.data.finished === true;
+      }
+    }
+    return { seen: seen, detFinished: detFinished };
+  }, [eventLog, currentRequest]);
+  var seenEvents = seenEventsResult.seen;
+  var deterministicFinished = seenEventsResult.detFinished;
+
+  // Build set of active flow node IDs based on events actually received
   var activeFlowNodes = useMemo(function () {
     var active = {};
     if (!nodeStates) return active;
 
-    // Mark flow nodes as active/completed based on their linked pipeline node
     for (var i = 0; i < flowNodes.length; i++) {
       var fNode = flowNodes[i];
       var pipelineNodeId = fNode.data.nodeId;
       if (!pipelineNodeId) continue;
 
-      // If this is a branch-specific node, only highlight it if it's on the active branch
+      // Classification branch filtering
       if (allBranchNodeIds[fNode.id]) {
         if (!allowedBranchNodes[fNode.id]) continue;
+      }
+
+      // Deterministic branch filtering
+      if (deterministicFinished !== null) {
+        if (fNode.id === "f-finish-msg" && !deterministicFinished) continue;
+        if (fNode.id === "f-build-prompt" && deterministicFinished) continue;
+      }
+
+      // Retry node filtering: only light up if corresponding guardrail triggered
+      if (fNode.id === "f-retry-leak" && nodeStates["guardrail-leak"] && nodeStates["guardrail-leak"].status !== "error") continue;
+      if (fNode.id === "f-retry-confirm" && nodeStates["guardrail-confirm"] && nodeStates["guardrail-confirm"].status !== "error") continue;
+      if (fNode.id === "f-retry-state" && nodeStates["guardrail-state"] && nodeStates["guardrail-state"].status !== "error") continue;
+
+      // Check if this flow node's triggering event has been seen
+      var triggers = flowNodeTriggerEvents[fNode.id];
+      if (triggers) {
+        var triggered = false;
+        for (var t = 0; t < triggers.length; t++) {
+          if (seenEvents[triggers[t]]) {
+            triggered = true;
+            break;
+          }
+        }
+        if (!triggered) continue;
       }
 
       var pipelineState = nodeStates[pipelineNodeId];
@@ -56,7 +155,7 @@ export default function FlowDiagram({ nodeStates, currentRequest, onSelectNode }
     }
 
     return active;
-  }, [nodeStates, activeBranchNode, allowedBranchNodes]);
+  }, [nodeStates, activeBranchNode, allowedBranchNodes, seenEventsResult]);
 
   // Merge flow node states into node data
   var nodes = useMemo(function () {

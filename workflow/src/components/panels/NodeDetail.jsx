@@ -32,7 +32,7 @@ export default function NodeDetail({ selectedNode, nodeStates }) {
   if (!selectedNode) {
     return (
       <div style={{
-        height: "240px",
+        height: "100%",
         background: "#1e293b",
         borderTop: "1px solid #334155",
         padding: "12px 16px",
@@ -41,7 +41,6 @@ export default function NodeDetail({ selectedNode, nodeStates }) {
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        flexShrink: 0,
       }}>
         Click on a node to inspect its parameters
       </div>
@@ -72,13 +71,12 @@ export default function NodeDetail({ selectedNode, nodeStates }) {
 
   return (
     <div style={{
-      height: "240px",
+      height: "100%",
       background: "#1e293b",
       borderTop: "1px solid #334155",
       padding: "8px 16px",
       fontSize: "11px",
       overflowY: "auto",
-      flexShrink: 0,
     }}>
       {/* Header */}
       <div style={{

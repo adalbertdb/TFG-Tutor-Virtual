@@ -27,12 +27,12 @@ export default function EventLog({ eventLog, selectedEvent, onSelectEvent }) {
 
   return (
     <div style={{
-      width: "340px",
+      width: "100%",
+      height: "100%",
       background: "#1e293b",
       borderLeft: "1px solid #334155",
       display: "flex",
       flexDirection: "column",
-      flexShrink: 0,
     }}>
       <div style={{
         padding: "8px 12px",

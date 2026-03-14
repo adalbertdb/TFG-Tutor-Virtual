@@ -25,12 +25,12 @@ export default function RequestHistory({ requestHistory, onSelectRequest }) {
 
   return (
     <div style={{
-      width: "220px",
+      width: "100%",
+      height: "100%",
       background: "#1e293b",
       borderRight: "1px solid #334155",
       display: "flex",
       flexDirection: "column",
-      flexShrink: 0,
       fontSize: "10px",
     }}>
       {/* Stats header */}
