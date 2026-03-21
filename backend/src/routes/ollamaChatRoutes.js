@@ -117,7 +117,7 @@ function buildSystemPrompt(ejercicio) {
 
   if (typeof systemPrompt !== "string" || systemPrompt.trim() === "") {
     systemPrompt =
-      "Eres un tutor socrático. Responde en español. No des la solución: guía con preguntas concretas.";
+      "You are a Socratic tutor. Respond in the same language as the student. Do not give the solution: guide with concrete questions.";
   }
   return systemPrompt;
 }
