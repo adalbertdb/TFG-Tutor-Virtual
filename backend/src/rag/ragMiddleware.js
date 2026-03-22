@@ -18,6 +18,19 @@ const { buildTutorSystemPrompt, getLanguageInstruction } = require("../utils/pro
 const Ejercicio = require("../models/ejercicio");
 const Interaccion = require("../models/interaccion");
 
+// Append language instruction to the last user message in the array.
+// This is more effective than a separate system message because the LLM
+// pays more attention to user-role content right before generation.
+function injectLangIntoLastUserMsg(msgs, langInstr) {
+  if (!langInstr) return;
+  for (var j = msgs.length - 1; j >= 0; j--) {
+    if (msgs[j].role === "user") {
+      msgs[j] = { role: "user", content: msgs[j].content + "\n" + langInstr.trim() };
+      return;
+    }
+  }
+}
+
 let requestCounter = 0;
 
 const router = express.Router();
@@ -280,9 +293,7 @@ router.post("/chat/stream", async function (req, res, next) {
               "Generate a short congratulatory message confirming they identified the resistors correctly, and ask if they have any remaining questions about the exercise. " +
               "Respond in the SAME LANGUAGE the student has been using in the conversation. End your message with the exact token " + FIN_TOKEN
           });
-          if (langInstruction) {
-            finishMessages.push({ role: "system", content: langInstruction.trim() });
-          }
+          injectLangIntoLastUserMsg(finishMessages, langInstruction);
           var finishMsg;
           try {
             finishMsg = await callOllama(finishMessages);
@@ -332,9 +343,7 @@ router.post("/chat/stream", async function (req, res, next) {
       for (let i = 0; i < history.length; i++) {
         messages.push(history[i]);
       }
-      if (langInstruction) {
-        messages.push({ role: "system", content: langInstruction.trim() });
-      }
+      injectLangIntoLastUserMsg(messages, langInstruction);
 
       // 10. Call Ollama (non-streaming so we can check guardrails before sending to client)
       emitEvent("ollama_call_start", "start", { model: config.OLLAMA_MODEL, temperature: config.OLLAMA_TEMPERATURE, num_ctx: config.OLLAMA_NUM_CTX, num_predict: config.OLLAMA_NUM_PREDICT, keep_alive: config.OLLAMA_KEEP_ALIVE, messageCount: messages.length, ollamaUrl: config.OLLAMA_CHAT_URL });
@@ -358,9 +367,7 @@ router.post("/chat/stream", async function (req, res, next) {
         for (let i = 0; i < history.length; i++) {
           retryMessages.push(history[i]);
         }
-        if (langInstruction) {
-          retryMessages.push({ role: "system", content: langInstruction.trim() });
-        }
+        injectLangIntoLastUserMsg(retryMessages, langInstruction);
         fullResponse = await callOllama(retryMessages);
         emitEvent("ollama_retry", "end", { reason: "solution_leak", responseLength: fullResponse.length });
       }
@@ -378,9 +385,7 @@ router.post("/chat/stream", async function (req, res, next) {
         for (let i = 0; i < history.length; i++) {
           confirmRetry.push(history[i]);
         }
-        if (langInstruction) {
-          confirmRetry.push({ role: "system", content: langInstruction.trim() });
-        }
+        injectLangIntoLastUserMsg(confirmRetry, langInstruction);
         fullResponse = await callOllama(confirmRetry);
         emitEvent("ollama_retry", "end", { reason: "false_confirmation", responseLength: fullResponse.length });
       }
@@ -398,9 +403,7 @@ router.post("/chat/stream", async function (req, res, next) {
         for (let i = 0; i < history.length; i++) {
           stateRetry.push(history[i]);
         }
-        if (langInstruction) {
-          stateRetry.push({ role: "system", content: langInstruction.trim() });
-        }
+        injectLangIntoLastUserMsg(stateRetry, langInstruction);
         fullResponse = await callOllama(stateRetry);
         emitEvent("ollama_retry", "end", { reason: "state_reveal", responseLength: fullResponse.length });
       }

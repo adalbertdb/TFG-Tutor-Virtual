@@ -115,22 +115,34 @@ const confirmPhrases = [
   "perfecto", "correcto", "exacto", "exactamente", "muy bien",
   "eso es", "así es", "bien hecho", "en efecto", "efectivamente",
   "has identificado correctamente", "estás en lo correcto",
-  "buena observación", "buen trabajo",
+  "buena observación", "buen trabajo", "genial", "excelente",
+  "buen punto", "interesante",
+  // English equivalents
+  "perfect", "exactly", "very good", "well done", "great",
+  "good point", "interesting", "excellent", "good job",
+  // French equivalents
+  "parfait", "très bien", "excellent", "exactement", "bien joué",
+  // Italian equivalents
+  "perfetto", "molto bene", "esattamente", "ottimo",
+  // German equivalents
+  "perfekt", "sehr gut", "genau", "ausgezeichnet",
+  // Catalan equivalents
+  "perfecte", "molt bé", "exactament",
 ];
 
-// Check if the tutor is incorrectly confirming a wrong answer
-// classification must be wrong_answer, wrong_concept, or similar
+// Check if the tutor is incorrectly confirming a wrong or incomplete answer
+// Triggers for wrong answers, wrong concepts, single words, and answers needing reasoning
 function checkFalseConfirmation(response, classification) {
-  // Only check when the student's answer is wrong
-  const wrongTypes = ["wrong_answer", "wrong_concept", "single_word"];
-  var isWrong = false;
-  for (let i = 0; i < wrongTypes.length; i++) {
-    if (classification === wrongTypes[i]) {
-      isWrong = true;
+  // Check when the student's answer is wrong, incomplete, or needs correction
+  const checkTypes = ["wrong_answer", "wrong_concept", "single_word", "correct_no_reasoning", "correct_wrong_reasoning"];
+  var shouldCheck = false;
+  for (let i = 0; i < checkTypes.length; i++) {
+    if (classification === checkTypes[i]) {
+      shouldCheck = true;
       break;
     }
   }
-  if (!isWrong) {
+  if (!shouldCheck) {
     return { confirmed: false, details: "" };
   }
 
@@ -153,10 +165,13 @@ function checkFalseConfirmation(response, classification) {
 // Instruction to append when a false confirmation is detected
 function getFalseConfirmationInstruction() {
   return (
-    "\n\nCRITICAL: Your previous response CONFIRMED as correct something the student got WRONG. " +
-    "The student made a mistake. You must NOT say 'Perfect', 'Correct', 'Exactly', 'Very good' or anything similar. " +
-    "You must ask a Socratic question that makes them reconsider their error. " +
-    "Do NOT tell them directly what the error is, but do NOT confirm something incorrect either. " +
+    "\n\nCRITICAL: Your previous response used overly positive validation ('Perfect', 'Very good', 'Interesting', etc.) " +
+    "for an answer that is NOT fully correct or has not been justified with reasoning. " +
+    "You must NOT say 'Perfect', 'Correct', 'Exactly', 'Very good', 'Interesting', 'Good point', 'Great' or anything similar. " +
+    "If the answer is partially correct, say 'You are on the right track, but there is something to reconsider'. " +
+    "If the answer is wrong, say 'That is not quite right'. " +
+    "If the student gave a vague or minimal answer, simply ask them to explain their reasoning. " +
+    "You must ask a Socratic question that guides the student. " +
     "ALWAYS respond in the same language the student used in their last message."
   );
 }

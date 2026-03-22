@@ -126,7 +126,17 @@ function analyzeStudentResistances(resistances, correctAnswer) {
   text = text + "CRITICAL: Evaluate EACH resistance independently. If the student says multiple resistances, some may be correct and others wrong. ";
   text = text + "Do NOT confirm or deny them as a group. ";
   text = text + "If the student says something correct about one resistance, acknowledge it. ";
-  text = text + "If the student says something wrong about another, guide them to reconsider THAT specific one.\n\n";
+  text = text + "If the student says something wrong about another, guide them to reconsider THAT specific one.\n";
+
+  // Add explicit tone guidance based on actual correctness
+  if (wrongOnes.length > 0 && correctOnes.length > 0) {
+    text = text + "TONE: The answer is PARTIALLY correct. Do NOT use 'Perfect', 'Very good', 'Great'. Say something like 'You are on the right track, but not everything is correct' and guide them to reconsider the wrong parts.\n";
+  } else if (wrongOnes.length > 0 && correctOnes.length === 0) {
+    text = text + "TONE: The answer is INCORRECT. Do NOT use any positive validation. Say 'That is not quite right' and ask a guiding question.\n";
+  } else if (missed.length > 0) {
+    text = text + "TONE: The answer is INCOMPLETE (correct so far, but missing resistances). Do NOT use 'Perfect' or 'Very good'. Say something like 'You are on the right track' and guide them to think about what else might be missing.\n";
+  }
+  text = text + "\n";
   return text;
 }
 
@@ -388,7 +398,7 @@ async function runFullPipeline(userMessage, exerciseNum, correctAnswer, userId) 
   result.augmentation += "[GUARDRAIL]\n";
   result.augmentation += "CRITICAL RULES FOR YOUR RESPONSE:\n";
   result.augmentation += "1. Do NOT reveal the correct answer or list correct resistors together.\n";
-  result.augmentation += "2. Do NOT confirm incorrect answers ('Perfect', 'Correct', 'Very good').\n";
+  result.augmentation += "2. Do NOT confirm incorrect or PARTIALLY correct answers ('Perfect', 'Correct', 'Very good', 'Interesting', 'Good point'). If the answer is partially correct, say 'You are on the right track, but there is something to reconsider'. If incorrect, say 'That is not quite right'. If vague or minimal ('no', 'yes'), do NOT validate — just ask a guiding question.\n";
   result.augmentation += "3. Do NOT name specific resistors for the student to analyze ('What about R5?', 'Look at R3').\n";
   result.augmentation += "4. Do NOT reveal resistor states (short-circuited, open), switch positions, or connections between nodes.\n";
   result.augmentation += "5. Ask ONE single Socratic question about a CONCEPT, not about a component.\n";

@@ -133,6 +133,14 @@ STRICT RULES:
 - NEVER attribute a property to a resistance that does not correspond to it. Before stating anything about a resistance, verify in the NETLIST.
 - NEVER confirm as correct something that is incorrect. If the student says something wrong, do NOT say "Perfect", "Correct", "Very good", "Exactly" or anything similar.
 - NEVER reinterpret what the student has said.
+
+VALIDATION TONE (critical):
+- Calibrate your opening words to the ACTUAL correctness of the student's response:
+  - FULLY CORRECT with good reasoning → you may use "Very good", "Perfect", etc.
+  - PARTIALLY CORRECT (some elements right but others wrong or missing) → say "You are on the right track, but there is something you should reconsider" or "Part of what you say is correct, but not entirely". NEVER use "Perfect", "Very good", "Great", "Exactly" for a partial answer.
+  - INCORRECT → say "That is not quite right" or "Not exactly" and then ask a guiding question. NEVER use positive validation words.
+  - VAGUE or MINIMAL answer ("no", "yes", "I don't know", a single word) → do NOT validate with words like "Interesting", "Good point", "Good". Simply ask them to elaborate or guide them with a question.
+- Using "Perfect" or "Very good" for a partially correct or incorrect answer is pedagogically harmful because it reinforces incomplete or wrong understanding.
 - NEVER point out a specific resistance for the student to analyze (e.g., "What about R5?", "Look at R3", "Analyze R1 and R4").
 - NEVER reveal the state of a resistance (short-circuited, open, etc.), the position of a switch, or topology information. The student must discover it by analyzing the circuit.
 - If the student gives an answer without reasoning, ask them to explain WHY before guiding them.
@@ -222,7 +230,7 @@ const SHORT_LANG_MAP = {
   "ok": "en", "thanks": "en", "thank you": "en", "of course": "en", "okay": "en",
   "please": "en", "help": "en", "right": "en", "good": "en", "great": "en",
   "i think": "en", "i believe": "en", "i understand": "en",
-  "i don't know": "en", "what": "en", "why": "en", "how": "en",
+  "i don't know": "en", "no idea": "en", "what": "en", "why": "en", "how": "en",
   "can you help": "en", "let me think": "en", "not sure": "en",
   "got it": "en", "i see": "en", "go on": "en", "go ahead": "en",
   // French
@@ -254,13 +262,25 @@ const SHORT_LANG_MAP = {
   "adéu": "ca", "d'acord": "ca", "entenc": "ca",
 };
 
+// Precompute a normalized version of the map (no accents, no apostrophes)
+// so typos like "i dont know" match "i don't know", "ola" matches "olá", etc.
+function stripDiacritics(s) {
+  return s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/['']/g, "");
+}
+var SHORT_LANG_MAP_NORM = {};
+for (var _k in SHORT_LANG_MAP) {
+  SHORT_LANG_MAP_NORM[stripDiacritics(_k)] = SHORT_LANG_MAP[_k];
+}
+
 function getLanguageInstruction(text) {
   if (typeof text !== "string" || text.trim().length < 2) {
     return "";
   }
   var trimmed = text.trim();
-  // Try curated map first (handles short texts tinyld gets wrong)
-  var code = SHORT_LANG_MAP[trimmed.toLowerCase()] || detect(trimmed);
+  var lower = trimmed.toLowerCase();
+  var normalized = stripDiacritics(lower);
+  // Try curated map (exact → accent-normalized → tinyld fallback)
+  var code = SHORT_LANG_MAP[lower] || SHORT_LANG_MAP_NORM[normalized] || detect(trimmed);
   if (!code || code === "") {
     return "";
   }

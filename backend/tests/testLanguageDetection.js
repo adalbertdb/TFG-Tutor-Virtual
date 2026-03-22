@@ -68,7 +68,23 @@ expectLang("Bon dia", "Catalan");
 expectLang("Gràcies", "Catalan");
 
 // ========================================
-// Phase 2: Longer texts (tinyld works fine)
+// Phase 2: Typos and missing accents/apostrophes
+// ========================================
+console.log("\n=== Phase 2: Typo resilience (normalized map) ===\n");
+
+expectLang("i dont know", "English");   // no apostrophe
+expectLang("dont know", "English");
+expectLang("no idea", "English");       // tinyld returns "" for this
+expectLang("ola", "Portuguese");        // no accent on "olá"
+expectLang("daccord", "French");        // no apostrophe on "d'accord"
+expectLang("tres bien", "French");      // no accent on "très"
+expectLang("naturlich", "German");      // no umlaut on "natürlich"
+expectLang("perche", "Italian");        // no accent on "perché"
+expectLang("como", "Spanish");          // no accent on "cómo"
+expectLang("gracies", "Catalan");       // no accent on "gràcies"
+
+// ========================================
+// Phase 3: Longer texts (tinyld works fine)
 // ========================================
 console.log("\n=== Phase 2: Longer text detection (tinyld) ===\n");
 
@@ -82,7 +98,7 @@ expectLang("Quero começar o exercício. Pode me guiar passo a passo?", "Portugu
 // ========================================
 // Phase 3: Edge cases
 // ========================================
-console.log("\n=== Phase 3: Edge cases ===\n");
+console.log("\n=== Phase 4: Edge cases ===\n");
 
 assert("Empty string -> empty", getLanguageInstruction("") === "");
 assert("null -> empty", getLanguageInstruction(null) === "");

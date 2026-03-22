@@ -14,6 +14,17 @@ const { buildTutorSystemPrompt, getLanguageInstruction } = require("../utils/pro
 // Lo dejo para no romperte nada, pero si ya lo cargas en index.js, puedes quitar esta línea.
 require("dotenv").config();
 
+// Append language instruction to the last user message in the array.
+function injectLangIntoLastUserMsg(msgs, langInstr) {
+  if (!langInstr) return;
+  for (var j = msgs.length - 1; j >= 0; j--) {
+    if (msgs[j].role === "user") {
+      msgs[j] = { role: "user", content: msgs[j].content + "\n" + langInstr.trim() };
+      return;
+    }
+  }
+}
+
 const router = express.Router();
 
 // =====================
@@ -389,9 +400,7 @@ router.post("/chat/stream", async (req, res) => {
             "Respond in the SAME LANGUAGE the student has been using in the conversation. End your message with the exact token " + FIN_TOKEN
         },
       ];
-      if (langInstruction) {
-        finishMessages.push({ role: "system", content: langInstruction.trim() });
-      }
+      injectLangIntoLastUserMsg(finishMessages, langInstruction);
 
       let assistant;
       try {
@@ -435,9 +444,7 @@ router.post("/chat/stream", async (req, res) => {
     const systemPrompt = buildSystemPrompt(ejercicio) + langInstruction;
     const history = await loadLastMessages(iid);
     const messages = [{ role: "system", content: systemPrompt }, ...history];
-    if (langInstruction) {
-      messages.push({ role: "system", content: langInstruction.trim() });
-    }
+    injectLangIntoLastUserMsg(messages, langInstruction);
 
     dlog(reqId, "🧱 messages", {
       total: messages.length,
@@ -597,9 +604,7 @@ router.post("/chat/start-exercise", async (req, res) => {
             "Respond in the SAME LANGUAGE the student has been using in the conversation. End your message with the exact token " + FIN_TOKEN
         },
       ];
-      if (startLangInstr) {
-        finishMessages.push({ role: "system", content: startLangInstr.trim() });
-      }
+      injectLangIntoLastUserMsg(finishMessages, startLangInstr);
 
       let assistant;
       try {
