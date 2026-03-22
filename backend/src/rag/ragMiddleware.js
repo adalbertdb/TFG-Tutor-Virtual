@@ -14,7 +14,7 @@ const { loadKG } = require("./knowledgeGraph");
 const { loadIndex } = require("./bm25");
 const { logInteraction } = require("./logger");
 const { setRequestId, emitEvent } = require("./ragEventBus");
-const { buildTutorSystemPrompt } = require("../utils/promptBuilder");
+const { buildTutorSystemPrompt, getLanguageInstruction } = require("../utils/promptBuilder");
 const Ejercicio = require("../models/ejercicio");
 const Interaccion = require("../models/interaccion");
 
@@ -247,6 +247,7 @@ router.post("/chat/stream", async function (req, res, next) {
 
       // 6. Save user message
       var text = userMessage.trim();
+      var langInstruction = getLanguageInstruction(text);
       await Interaccion.updateOne(
         { _id: iid },
         { $push: { conversacion: { role: "user", content: text } }, $set: { fin: new Date() } }
@@ -266,7 +267,31 @@ router.post("/chat/stream", async function (req, res, next) {
           || (ragResult.classification === "correct_no_reasoning" && hasConversation)) {
           // Student gave correct answer and has been reasoning (or gave reasoning now) → finish
           emitEvent("deterministic_finish", "end", { classification: ragResult.classification, historyLength: prevHistory.length, finished: true });
-          var finishMsg = "¡Correcto! Has identificado bien las resistencias. ¿Te ha quedado alguna duda sobre el ejercicio?" + FIN_TOKEN;
+
+          // Generate finish message via LLM so it matches the student's language
+          var finishSystemPrompt = buildSystemPrompt(ejercicio) + getLanguageInstruction(text);
+          var finishMessages = [{ role: "system", content: finishSystemPrompt }];
+          for (let i = 0; i < prevHistory.length; i++) {
+            finishMessages.push(prevHistory[i]);
+          }
+          finishMessages.push({
+            role: "user",
+            content: "INTERNAL INSTRUCTION (not a student message): The student just gave the correct answer with good reasoning. " +
+              "Generate a short congratulatory message confirming they identified the resistors correctly, and ask if they have any remaining questions about the exercise. " +
+              "Respond in the SAME LANGUAGE the student has been using in the conversation. End your message with the exact token " + FIN_TOKEN
+          });
+          if (langInstruction) {
+            finishMessages.push({ role: "system", content: langInstruction.trim() });
+          }
+          var finishMsg;
+          try {
+            finishMsg = await callOllama(finishMessages);
+            if (!finishMsg.includes(FIN_TOKEN)) {
+              finishMsg = finishMsg + FIN_TOKEN;
+            }
+          } catch (e) {
+            finishMsg = "Correct! You have correctly identified the resistors. Do you have any remaining questions about the exercise?" + FIN_TOKEN;
+          }
           sseSend(res, { chunk: finishMsg });
 
           await Interaccion.updateOne(
@@ -296,7 +321,7 @@ router.post("/chat/stream", async function (req, res, next) {
 
       // 8. Build augmented system prompt (base prompt + RAG context)
       var basePrompt = buildSystemPrompt(ejercicio);
-      var augmentedPrompt = basePrompt + "\n\n" + ragResult.augmentation;
+      var augmentedPrompt = basePrompt + "\n\n" + ragResult.augmentation + langInstruction;
       emitEvent("prompt_built", "end", { systemPromptLength: basePrompt.length, ragAugmentationLength: ragResult.augmentation.length, totalPromptLength: augmentedPrompt.length, augmentationPreview: ragResult.augmentation });
 
       // 9. Load conversation history (last N messages)
@@ -306,6 +331,9 @@ router.post("/chat/stream", async function (req, res, next) {
       var messages = [{ role: "system", content: augmentedPrompt }];
       for (let i = 0; i < history.length; i++) {
         messages.push(history[i]);
+      }
+      if (langInstruction) {
+        messages.push({ role: "system", content: langInstruction.trim() });
       }
 
       // 10. Call Ollama (non-streaming so we can check guardrails before sending to client)
@@ -325,10 +353,13 @@ router.post("/chat/stream", async function (req, res, next) {
         console.log("[RAG] Guardrail triggered (leak): " + leakCheck.details);
         emitEvent("ollama_retry", "start", { reason: "solution_leak", retryCount: 1 });
 
-        var strongerPrompt = augmentedPrompt + getStrongerInstruction();
+        var strongerPrompt = augmentedPrompt + getStrongerInstruction() + langInstruction;
         var retryMessages = [{ role: "system", content: strongerPrompt }];
         for (let i = 0; i < history.length; i++) {
           retryMessages.push(history[i]);
+        }
+        if (langInstruction) {
+          retryMessages.push({ role: "system", content: langInstruction.trim() });
         }
         fullResponse = await callOllama(retryMessages);
         emitEvent("ollama_retry", "end", { reason: "solution_leak", responseLength: fullResponse.length });
@@ -342,10 +373,13 @@ router.post("/chat/stream", async function (req, res, next) {
         console.log("[RAG] Guardrail triggered (false confirm): " + confirmCheck.details);
         emitEvent("ollama_retry", "start", { reason: "false_confirmation", retryCount: 1 });
 
-        var confirmPrompt = augmentedPrompt + getFalseConfirmationInstruction();
+        var confirmPrompt = augmentedPrompt + getFalseConfirmationInstruction() + langInstruction;
         var confirmRetry = [{ role: "system", content: confirmPrompt }];
         for (let i = 0; i < history.length; i++) {
           confirmRetry.push(history[i]);
+        }
+        if (langInstruction) {
+          confirmRetry.push({ role: "system", content: langInstruction.trim() });
         }
         fullResponse = await callOllama(confirmRetry);
         emitEvent("ollama_retry", "end", { reason: "false_confirmation", responseLength: fullResponse.length });
@@ -359,10 +393,13 @@ router.post("/chat/stream", async function (req, res, next) {
         console.log("[RAG] Guardrail triggered (state reveal): " + stateCheck.details);
         emitEvent("ollama_retry", "start", { reason: "state_reveal", retryCount: 1 });
 
-        var statePrompt = augmentedPrompt + getStateRevealInstruction();
+        var statePrompt = augmentedPrompt + getStateRevealInstruction() + langInstruction;
         var stateRetry = [{ role: "system", content: statePrompt }];
         for (let i = 0; i < history.length; i++) {
           stateRetry.push(history[i]);
+        }
+        if (langInstruction) {
+          stateRetry.push({ role: "system", content: langInstruction.trim() });
         }
         fullResponse = await callOllama(stateRetry);
         emitEvent("ollama_retry", "end", { reason: "state_reveal", responseLength: fullResponse.length });

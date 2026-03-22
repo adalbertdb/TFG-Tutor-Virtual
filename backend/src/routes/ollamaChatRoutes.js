@@ -8,7 +8,7 @@ const https = require("https");
 
 const Interaccion = require("../models/interaccion");
 const Ejercicio = require("../models/ejercicio");
-const { buildTutorSystemPrompt } = require("../utils/promptBuilder");
+const { buildTutorSystemPrompt, getLanguageInstruction } = require("../utils/promptBuilder");
 
 // ⚠️ Recomendación: dotenv se carga UNA vez en index.js.
 // Lo dejo para no romperte nada, pero si ya lo cargas en index.js, puedes quitar esta línea.
@@ -364,6 +364,7 @@ router.post("/chat/stream", async (req, res) => {
 
     // Guardar mensaje user (atómico)
     const text = userMessage.trim();
+    const langInstruction = getLanguageInstruction(text);
     await Interaccion.updateOne(
       { _id: iid },
       { $push: { conversacion: { role: "user", content: text } }, $set: { fin: new Date() } }
@@ -375,10 +376,49 @@ router.post("/chat/stream", async (req, res) => {
     const correctNow = isCorrectAnswerForExercise({ userText: text, ejercicio });
 
     if (correctNow) {
-      // Mensaje corto y token EXACTO al final (sin espacios extra)
-      const assistant = `Correcto. Has dado la respuesta exacta.${FIN_TOKEN}`;
+      // Generate finish message via LLM so it matches the student's language
+      const finishHistory = await loadLastMessages(iid);
+      const finishSystemPrompt = buildSystemPrompt(ejercicio) + langInstruction;
+      const finishMessages = [
+        { role: "system", content: finishSystemPrompt },
+        ...finishHistory,
+        {
+          role: "user",
+          content: "INTERNAL INSTRUCTION (not a student message): The student just gave the correct answer. " +
+            "Generate a short message confirming they gave the exact correct answer. " +
+            "Respond in the SAME LANGUAGE the student has been using in the conversation. End your message with the exact token " + FIN_TOKEN
+        },
+      ];
+      if (langInstruction) {
+        finishMessages.push({ role: "system", content: langInstruction.trim() });
+      }
 
-      // Enviamos al cliente como stream “normal”
+      let assistant;
+      try {
+        const finishResp = await axios.post(
+          `${baseUrl}/api/chat`,
+          {
+            model: OLLAMA_MODEL,
+            stream: false,
+            keep_alive: OLLAMA_KEEP_ALIVE,
+            messages: finishMessages,
+            options: {
+              num_predict: OLLAMA_NUM_PREDICT,
+              num_ctx: OLLAMA_NUM_CTX,
+              temperature: OLLAMA_TEMPERATURE,
+            },
+          },
+          { timeout: OLLAMA_TIMEOUT_MS, ...axiosConfigForBaseUrl(baseUrl) }
+        );
+        assistant = (finishResp.data.message && finishResp.data.message.content) || "";
+        if (!assistant.includes(FIN_TOKEN)) {
+          assistant = assistant + FIN_TOKEN;
+        }
+      } catch (e) {
+        assistant = `Correct! You gave the exact answer.${FIN_TOKEN}`;
+      }
+
+      // Enviamos al cliente como stream "normal"
       sseSend(res, { chunk: assistant });
 
       // Guardamos y cerramos
@@ -392,9 +432,12 @@ router.post("/chat/stream", async (req, res) => {
     }
 
     // Construir messages: system + últimos N
-    const systemPrompt = buildSystemPrompt(ejercicio);
+    const systemPrompt = buildSystemPrompt(ejercicio) + langInstruction;
     const history = await loadLastMessages(iid);
     const messages = [{ role: "system", content: systemPrompt }, ...history];
+    if (langInstruction) {
+      messages.push({ role: "system", content: langInstruction.trim() });
+    }
 
     dlog(reqId, "🧱 messages", {
       total: messages.length,
@@ -530,7 +573,7 @@ router.post("/chat/start-exercise", async (req, res) => {
     const ejercicio = await Ejercicio.findById(exerciseId).lean();
     if (!ejercicio) return res.status(404).json({ message: "Ejercicio no encontrado." });
 
-    const systemPrompt = buildSystemPrompt(ejercicio);
+    const systemPrompt = buildSystemPrompt(ejercicio) + getLanguageInstruction(firstMsg);
 
     const interaccion = await Interaccion.create({
       usuario_id: userId,
@@ -542,7 +585,46 @@ router.post("/chat/start-exercise", async (req, res) => {
 
     // ✅ Si el primer mensaje ya es respuesta correcta, cerramos determinista también aquí
     if (isCorrectAnswerForExercise({ userText: firstMsg, ejercicio })) {
-      const assistant = `Correcto. Has dado la respuesta exacta.${FIN_TOKEN}`;
+      // Generate finish message via LLM so it matches the student's language
+      var startLangInstr = getLanguageInstruction(firstMsg);
+      const finishMessages = [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: firstMsg },
+        {
+          role: "user",
+          content: "INTERNAL INSTRUCTION (not a student message): The student just gave the correct answer. " +
+            "Generate a short message confirming they gave the exact correct answer. " +
+            "Respond in the SAME LANGUAGE the student has been using in the conversation. End your message with the exact token " + FIN_TOKEN
+        },
+      ];
+      if (startLangInstr) {
+        finishMessages.push({ role: "system", content: startLangInstr.trim() });
+      }
+
+      let assistant;
+      try {
+        const finishResp = await axios.post(
+          `${baseUrl}/api/chat`,
+          {
+            model: OLLAMA_MODEL,
+            stream: false,
+            keep_alive: OLLAMA_KEEP_ALIVE,
+            messages: finishMessages,
+            options: {
+              num_predict: OLLAMA_NUM_PREDICT,
+              num_ctx: OLLAMA_NUM_CTX,
+              temperature: OLLAMA_TEMPERATURE,
+            },
+          },
+          { timeout: OLLAMA_TIMEOUT_MS, ...axiosConfigForBaseUrl(baseUrl) }
+        );
+        assistant = (finishResp.data.message && finishResp.data.message.content) || "";
+        if (!assistant.includes(FIN_TOKEN)) {
+          assistant = assistant + FIN_TOKEN;
+        }
+      } catch (e) {
+        assistant = `Correct! You gave the exact answer.${FIN_TOKEN}`;
+      }
 
       await Interaccion.updateOne(
         { _id: interaccion._id },

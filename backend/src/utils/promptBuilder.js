@@ -1,5 +1,7 @@
 // backend/src/utils/promptBuilder.js
 
+const { detect } = require("tinyld");
+
 const FIN_TOKEN = "<FIN_EJERCICIO>";
 
 function safeStr(x) {
@@ -123,7 +125,7 @@ PEDAGOGICAL APPROACH (how an expert thinks):
 - Examples of BAD questions: "What happens with R5?", "Analyze R3", "How does R4 relate to N2?", "Consider R1".
 
 STRICT RULES:
-- ALWAYS respond in the same language the student used in their last message. If they write in Spanish, respond in Spanish. If they write in Valencian/Catalan, respond in Valencian/Catalan. If they write in English, respond in English. Adapt the language message by message.
+- ALWAYS respond in the EXACT same language the student used in their last message. Detect the specific language (e.g. Spanish, English, French, Catalan, German, etc.) and respond in that exact language. Do NOT confuse similar languages (e.g. French is NOT Catalan). Adapt the language message by message.
 - Do NOT give the final solution directly.
 - Do not use analogies.
 - Keep a clear, patient, and technical tone.
@@ -194,4 +196,80 @@ ${imagen ? `Associated image (reference): ${imagen}` : ""}
   return [rules, ejercicioInfo, contexto].filter(Boolean).join("\n\n");
 }
 
-module.exports = { buildTutorSystemPrompt };
+const LANG_NAMES = {
+  af: "Afrikaans", ar: "Arabic", bg: "Bulgarian", bn: "Bengali",
+  ca: "Catalan", cs: "Czech", cy: "Welsh", da: "Danish",
+  de: "German", el: "Greek", en: "English", es: "Spanish",
+  et: "Estonian", eu: "Basque", fa: "Persian", fi: "Finnish",
+  fr: "French", ga: "Irish", gl: "Galician", gu: "Gujarati",
+  he: "Hebrew", hi: "Hindi", hr: "Croatian", hu: "Hungarian",
+  hy: "Armenian", id: "Indonesian", is: "Icelandic", it: "Italian",
+  ja: "Japanese", ka: "Georgian", kn: "Kannada", ko: "Korean",
+  lt: "Lithuanian", lv: "Latvian", mk: "Macedonian", ml: "Malayalam",
+  mr: "Marathi", ms: "Malay", nl: "Dutch", no: "Norwegian",
+  pa: "Punjabi", pl: "Polish", pt: "Portuguese", ro: "Romanian",
+  ru: "Russian", sk: "Slovak", sl: "Slovenian", sq: "Albanian",
+  sr: "Serbian", sv: "Swedish", ta: "Tamil", te: "Telugu",
+  th: "Thai", tl: "Tagalog", tr: "Turkish", uk: "Ukrainian",
+  ur: "Urdu", vi: "Vietnamese", zh: "Chinese",
+};
+
+// Curated map for short texts where tinyld is unreliable
+// (e.g. "Hello" → tinyld says Italian, "Hi" → empty, "Hola" → empty)
+const SHORT_LANG_MAP = {
+  // English
+  "hello": "en", "hi": "en", "hey": "en", "yes": "en", "no": "en", "sure": "en",
+  "ok": "en", "thanks": "en", "thank you": "en", "of course": "en", "okay": "en",
+  "please": "en", "help": "en", "right": "en", "good": "en", "great": "en",
+  "i think": "en", "i believe": "en", "i understand": "en",
+  "i don't know": "en", "what": "en", "why": "en", "how": "en",
+  "can you help": "en", "let me think": "en", "not sure": "en",
+  "got it": "en", "i see": "en", "go on": "en", "go ahead": "en",
+  // French
+  "bonjour": "fr", "salut": "fr", "oui": "fr", "merci": "fr",
+  "bien sûr": "fr", "pourquoi": "fr", "d'accord": "fr", "bonsoir": "fr",
+  "je pense": "fr", "je crois": "fr", "je ne sais pas": "fr",
+  "s'il vous plaît": "fr", "au revoir": "fr", "comment": "fr",
+  "exactement": "fr", "je comprends": "fr", "très bien": "fr",
+  // Spanish
+  "hola": "es", "sí": "es", "si": "es", "gracias": "es", "vale": "es",
+  "bueno": "es", "claro": "es", "por qué": "es", "cómo": "es",
+  "de acuerdo": "es", "no sé": "es", "creo que": "es", "entiendo": "es",
+  "por favor": "es", "buenos días": "es", "buenas tardes": "es",
+  "no lo sé": "es", "adelante": "es", "correcto": "es",
+  // German
+  "hallo": "de", "guten tag": "de", "ja": "de", "nein": "de", "danke": "de",
+  "natürlich": "de", "warum": "de", "bitte": "de", "gut": "de",
+  "ich denke": "de", "ich glaube": "de", "ich verstehe": "de",
+  "guten morgen": "de", "guten abend": "de", "genau": "de",
+  // Italian
+  "ciao": "it", "buongiorno": "it", "grazie": "it", "perché": "it",
+  "certo": "it", "capisco": "it", "per favore": "it", "esatto": "it",
+  "buonasera": "it", "arrivederci": "it", "penso": "it", "va bene": "it",
+  // Portuguese
+  "olá": "pt", "obrigado": "pt", "obrigada": "pt", "sim": "pt",
+  "por quê": "pt", "bom dia": "pt", "boa tarde": "pt", "entendo": "pt",
+  // Catalan
+  "bon dia": "ca", "gràcies": "ca", "si us plau": "ca", "bona tarda": "ca",
+  "adéu": "ca", "d'acord": "ca", "entenc": "ca",
+};
+
+function getLanguageInstruction(text) {
+  if (typeof text !== "string" || text.trim().length < 2) {
+    return "";
+  }
+  var trimmed = text.trim();
+  // Try curated map first (handles short texts tinyld gets wrong)
+  var code = SHORT_LANG_MAP[trimmed.toLowerCase()] || detect(trimmed);
+  if (!code || code === "") {
+    return "";
+  }
+  var langName = LANG_NAMES[code];
+  if (!langName) {
+    return "";
+  }
+  return "\n\n[LANGUAGE INSTRUCTION]\nThe student is writing in " + langName +
+    ". You MUST respond ONLY in " + langName + ".";
+}
+
+module.exports = { buildTutorSystemPrompt, getLanguageInstruction };
