@@ -3,7 +3,7 @@
 const config = require("./config");
 const { classifyQuery, extractResistances, types } = require("./queryClassifier");
 const { hybridSearch } = require("./hybridSearch");
-const { searchKG } = require("./knowledgeGraph");
+const { searchKG, searchKGByAC } = require("./knowledgeGraph");
 const { emitEvent } = require("./ragEventBus");
 const Resultado = require("../models/resultado");
 
@@ -59,6 +59,7 @@ Socratic questions: "¿Qué ocurre con la corriente cuando un componente está c
   let text = "[DOMAIN KNOWLEDGE]\n";
   for (let i = 0; i < kgResults.length; i++) {
     const entry = kgResults[i];
+    // Concept definition and relationship
     text = text + "Concept: \"" + entry.node1 + " " + entry.relation + " " + entry.node2 + "\"\n";
     if (entry.expertReasoning) {
       text = text + "Expert reasoning: \"" + entry.expertReasoning + "\"\n";
@@ -66,11 +67,25 @@ Socratic questions: "¿Qué ocurre con la corriente cuando un componente está c
     if (entry.socraticQuestions) {
       text = text + "Socratic questions: \"" + entry.socraticQuestions + "\"\n";
     }
+    // First alternative conception
     if (entry.acName) {
-      text = text + "Alternative conception: \"" + entry.acName + "\"\n";
+      text = text + "Alternative conception (AC): \"" + entry.acName + "\"\n";
     }
     if (entry.acDescription) {
       text = text + "AC description: \"" + entry.acDescription + "\"\n";
+    }
+    if (entry.acErrors) {
+      text = text + "Common student errors: \"" + entry.acErrors + "\"\n";
+    }
+    // Second alternative conception (if present)
+    if (entry.ac2Name) {
+      text = text + "Alternative conception 2 (AC): \"" + entry.ac2Name + "\"\n";
+    }
+    if (entry.ac2Description) {
+      text = text + "AC2 description: \"" + entry.ac2Description + "\"\n";
+    }
+    if (entry.ac2Errors) {
+      text = text + "Common student errors 2: \"" + entry.ac2Errors + "\"\n";
     }
     text = text + "\n";
   }
@@ -120,13 +135,12 @@ function analyzeStudentResistances(resistances, correctAnswer) {
     text = text + "- WRONG: " + wrongOnes.join(", ") + " are NOT in the correct answer.\n";
   }
   if (missed.length > 0) {
-    text = text + "- MISSING: The student has not mentioned " + missed.join(", ") + " which ARE in the correct answer.\n";
+    text = text + "- MISSING: The student has NOT mentioned " + missed.length + " resistance(s) that ARE in the correct answer. Do NOT name which ones — the student must discover them.\n";
   }
 
-  text = text + "CRITICAL: Evaluate EACH resistance independently. If the student says multiple resistances, some may be correct and others wrong. ";
-  text = text + "Do NOT confirm or deny them as a group. ";
-  text = text + "If the student says something correct about one resistance, acknowledge it. ";
-  text = text + "If the student says something wrong about another, guide them to reconsider THAT specific one.\n";
+  text = text + "CRITICAL: Do NOT name any resistance the student has not mentioned yet. ";
+  text = text + "If resistances are missing, ask a CONCEPTUAL question (about current paths, series/parallel, short circuits) that leads the student to discover them. ";
+  text = text + "Example: '¿Hay otros caminos por los que pueda circular corriente?' instead of '¿Qué pasa con R4?'.\n";
 
   // Add explicit tone guidance based on actual correctness
   if (wrongOnes.length > 0 && correctOnes.length > 0) {
@@ -254,8 +268,23 @@ function extractKeyEntities(userMessage) {
   return parts.join(" ");
 }
 
+// Deduplicate KG results by concept key (Node1|Relation|Node2)
+function deduplicateKG(entries) {
+  var seen = {};
+  var result = [];
+  for (var i = 0; i < entries.length; i++) {
+    var key = (entries[i].node1 || "") + "|" + (entries[i].relation || "") + "|" + (entries[i].node2 || "");
+    if (!seen[key]) {
+      seen[key] = true;
+      result.push(entries[i]);
+    }
+  }
+  return result;
+}
+
 // Main pipeline: classifies, retrieves, evaluates quality, and builds augmentation
-async function runPipeline(userMessage, exerciseNum, correctAnswer, userId) {
+// acRefs: exercise-level AC IDs (e.g. ["AC4", "AC9"]) used to find relevant KG entries
+async function runPipeline(userMessage, exerciseNum, correctAnswer, userId, acRefs) {
   // Step A: Classify the query
   emitEvent("classify_start", "start", { userMessage: userMessage, correctAnswer: correctAnswer, messageLength: userMessage.length });
   const classification = classifyQuery(userMessage, correctAnswer);
@@ -285,14 +314,16 @@ async function runPipeline(userMessage, exerciseNum, correctAnswer, userId) {
 
   if (classification.type === types.dontKnow) {
     emitEvent("routing_decision", "end", { classification: classification.type, decision: "scaffold", path: "dont_know → scaffold" });
-    // Only fetch the most relevant KG concepts for scaffolding (limit to 3 to avoid context overflow)
-    emitEvent("kg_search_start", "start", { concepts: ["serie", "paralelo", "cortocircuito"] });
-    const kgResults = searchKG(["serie", "paralelo", "cortocircuito"]);
-    const limited = kgResults.slice(0, 3);
-    emitEvent("kg_search_end", "end", { resultCount: limited.length, entries: limited.map(function(e) { return { node1: e.node1, relation: e.relation, node2: e.node2, acName: e.acName || null, acDescription: e.acDescription || null, expertReasoning: e.expertReasoning || "", socraticQuestions: e.socraticQuestions || "" }; }) });
-    result.augmentation = formatClassificationHint(classification, correctAnswer) + formatKGContext(limited);
+    // Search KG by exercise AC refs (exercise-specific misconceptions) + student concepts if any
+    var dkAcResults = searchKGByAC(acRefs);
+    var dkConceptResults = classification.concepts.length > 0 ? searchKG(classification.concepts) : [];
+    var dkAll = deduplicateKG(dkAcResults.concat(dkConceptResults));
+    var dkLimited = dkAll.slice(0, 4);
+    emitEvent("kg_search_start", "start", { acRefs: acRefs, concepts: classification.concepts });
+    emitEvent("kg_search_end", "end", { resultCount: dkLimited.length, entries: dkLimited.map(function(e) { return { node1: e.node1, relation: e.relation, node2: e.node2, acName: e.acName || null, acDescription: e.acDescription || null, expertReasoning: e.expertReasoning || "", socraticQuestions: e.socraticQuestions || "" }; }) });
+    result.augmentation = formatClassificationHint(classification, correctAnswer) + formatKGContext(dkLimited);
     result.decision = "scaffold";
-    result.sources = limited;
+    result.sources = dkLimited;
     return result;
   }
 
@@ -318,9 +349,15 @@ async function runPipeline(userMessage, exerciseNum, correctAnswer, userId) {
       emitEvent("hybrid_search_end", "end", { resultCount: datasetResults.length, topScore: datasetResults.length > 0 ? Math.round(datasetResults[0].score * 10000) / 10000 : 0, results: datasetResults.map(function(r, i) { return { rank: i + 1, index: r.index, score: Math.round(r.score * 10000) / 10000, student: r.student || "", tutor: r.tutor || "" }; }) });
     }
 
-    result.augmentation = formatClassificationHint(classification, correctAnswer) + formatExamples(datasetResults);
+    // Also search KG: by student concepts + exercise AC refs → provides conceptual questions
+    var waConceptResults = classification.concepts.length > 0 ? searchKG(classification.concepts) : [];
+    var waAcResults = searchKGByAC(acRefs);
+    var waKG = deduplicateKG(waConceptResults.concat(waAcResults)).slice(0, 3);
+    emitEvent("kg_search_start", "start", { acRefs: acRefs, concepts: classification.concepts });
+    emitEvent("kg_search_end", "end", { resultCount: waKG.length, entries: waKG.map(function(e) { return { node1: e.node1, relation: e.relation, node2: e.node2, acName: e.acName || null, acDescription: e.acDescription || null, expertReasoning: e.expertReasoning || "", socraticQuestions: e.socraticQuestions || "" }; }) });
+    result.augmentation = formatClassificationHint(classification, correctAnswer) + formatKGContext(waKG) + formatExamples(datasetResults);
     result.decision = "rag_examples";
-    result.sources = datasetResults;
+    result.sources = datasetResults.concat(waKG);
     return result;
   }
 
@@ -329,9 +366,13 @@ async function runPipeline(userMessage, exerciseNum, correctAnswer, userId) {
     emitEvent("hybrid_search_start", "start", { query: userMessage, exerciseNum: exerciseNum, topK: config.TOP_K_FINAL });
     const datasetResults = await hybridSearch(userMessage, exerciseNum);
     emitEvent("hybrid_search_end", "end", { resultCount: datasetResults.length, topScore: datasetResults.length > 0 ? Math.round(datasetResults[0].score * 10000) / 10000 : 0, results: datasetResults.map(function(r, i) { return { rank: i + 1, index: r.index, score: Math.round(r.score * 10000) / 10000, student: r.student || "", tutor: r.tutor || "" }; }) });
-    result.augmentation = formatClassificationHint(classification, correctAnswer) + formatExamples(datasetResults);
+    // KG by exercise ACs → helps tutor ask conceptual WHY questions
+    var cnrKG = searchKGByAC(acRefs).slice(0, 3);
+    emitEvent("kg_search_start", "start", { acRefs: acRefs });
+    emitEvent("kg_search_end", "end", { resultCount: cnrKG.length, entries: cnrKG.map(function(e) { return { node1: e.node1, relation: e.relation, node2: e.node2, acName: e.acName || null, acDescription: e.acDescription || null, expertReasoning: e.expertReasoning || "", socraticQuestions: e.socraticQuestions || "" }; }) });
+    result.augmentation = formatClassificationHint(classification, correctAnswer) + formatKGContext(cnrKG) + formatExamples(datasetResults);
     result.decision = "demand_reasoning";
-    result.sources = datasetResults;
+    result.sources = datasetResults.concat(cnrKG);
     return result;
   }
 
@@ -378,8 +419,9 @@ async function runPipeline(userMessage, exerciseNum, correctAnswer, userId) {
 }
 
 // Full pipeline with student history appended
-async function runFullPipeline(userMessage, exerciseNum, correctAnswer, userId) {
-  const result = await runPipeline(userMessage, exerciseNum, correctAnswer, userId);
+// acRefs: exercise-level AC IDs for KG lookup (optional, defaults to [])
+async function runFullPipeline(userMessage, exerciseNum, correctAnswer, userId, acRefs) {
+  const result = await runPipeline(userMessage, exerciseNum, correctAnswer, userId, acRefs || []);
 
   // If no RAG needed, skip 
   if (result.decision === "no_rag") {

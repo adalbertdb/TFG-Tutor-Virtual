@@ -19,32 +19,72 @@ function loadKG() {
   console.log("Knowledge graph loaded: " + kgEntries.length + " entries");
 }
 
+// Map a raw KG entry to a normalized object with ALL useful fields
+function mapEntry(entry) {
+  return {
+    enlace: entry.Enlace || "",
+    node1: entry.Node1 || "",
+    relation: entry.Relation || "",
+    node2: entry.Node2 || "",
+    expertReasoning: entry["Expert reasoning"] || "",
+    socraticQuestions: entry["Socratic Tutoring "] || "",
+    // First AC
+    ac: (entry.AC || "").trim(),
+    acName: entry["AC name"] || "",
+    acDescription: entry.Description || "",
+    acErrors: entry["Example common errors "] || "",
+    // Second AC (some entries have two)
+    ac2: (entry["AC.1"] || "").trim(),
+    ac2Name: entry["AC name.1"] || "",
+    ac2Description: entry.Description1 || "",
+    ac2Errors: entry["Example common errors 1"] || "",
+  };
+}
+
 // Search KG entries by concept keywords -> Returns entries where Node1, Node2 or Relation match
 function searchKG(concepts) {
   if (concepts.length === 0) {
     return [];
   }
 
-  const results = [];
-  for (let i = 0; i < kgEntries.length; i++) {
-    const entry = kgEntries[i];
-    const text = (entry.Node1 + " " + entry.Relation + " " + entry.Node2).toLowerCase();
+  var results = [];
+  for (var i = 0; i < kgEntries.length; i++) {
+    var text = (kgEntries[i].Node1 + " " + kgEntries[i].Relation + " " + kgEntries[i].Node2).toLowerCase();
 
-    for (let j = 0; j < concepts.length; j++) {
+    for (var j = 0; j < concepts.length; j++) {
       if (text.includes(concepts[j].toLowerCase())) {
-        results.push({
-          enlace: entry.Enlace,
-          node1: entry.Node1,
-          relation: entry.Relation,
-          node2: entry.Node2,
-          expertReasoning: entry["Expert reasoning"],
-          ac: entry.AC || "",
-          acName: entry["AC name"] || "",
-          acDescription: entry.Description || "",
-          socraticQuestions: entry["Socratic Tutoring "] || "",
-        });
-        break; // avoids duplicates if entry matches multiple concepts
+        results.push(mapEntry(kgEntries[i]));
+        break;
       }
+    }
+  }
+  return results;
+}
+
+// Search KG entries by AC (alternative conception) IDs
+// Returns entries where AC or AC.1 fields match any of the given IDs
+function searchKGByAC(acIds) {
+  if (!Array.isArray(acIds) || acIds.length === 0) {
+    return [];
+  }
+
+  var acSet = {};
+  for (var i = 0; i < acIds.length; i++) {
+    acSet[String(acIds[i]).toUpperCase().trim()] = true;
+  }
+
+  var results = [];
+  var seen = {};
+  for (var j = 0; j < kgEntries.length; j++) {
+    var entry = kgEntries[j];
+    var ac1 = String(entry.AC || "").toUpperCase().trim();
+    var ac2 = String(entry["AC.1"] || "").toUpperCase().trim();
+
+    if ((ac1 && acSet[ac1]) || (ac2 && acSet[ac2])) {
+      var key = (entry.Node1 || "") + "|" + (entry.Relation || "") + "|" + (entry.Node2 || "");
+      if (seen[key]) continue;
+      seen[key] = true;
+      results.push(mapEntry(entry));
     }
   }
   return results;
@@ -55,4 +95,4 @@ function getAllEntries() {
   return kgEntries;
 }
 
-module.exports = { loadKG, searchKG, getAllEntries };
+module.exports = { loadKG, searchKG, searchKGByAC, getAllEntries };

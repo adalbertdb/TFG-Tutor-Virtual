@@ -9,7 +9,7 @@ const fs = require("fs");
 const path = require("path");
 const config = require("./config");
 const { runFullPipeline } = require("./ragPipeline");
-const { checkSolutionLeak, getStrongerInstruction, checkFalseConfirmation, getFalseConfirmationInstruction, checkStateReveal, getStateRevealInstruction, checkLanguageMix, getLanguageMixInstruction, checkAnswerDirective, getAnswerDirectiveInstruction } = require("./guardrails");
+const { checkSolutionLeak, getStrongerInstruction, checkFalseConfirmation, getFalseConfirmationInstruction, checkStateReveal, getStateRevealInstruction, checkLanguageMix, getLanguageMixInstruction, checkAnswerDirective, getAnswerDirectiveInstruction, checkNewElementIntroduction, getNewElementIntroductionInstruction } = require("./guardrails");
 const { loadKG } = require("./knowledgeGraph");
 const { loadIndex } = require("./bm25");
 const { logInteraction } = require("./logger");
@@ -202,15 +202,19 @@ router.post("/chat/stream", async function (req, res, next) {
     var correctAnswer = getCorrectAnswer(ejercicio);
     if (correctAnswer.length === 0) return next();
 
-    emitEvent("exercise_loaded", "end", { exerciseNum: exerciseNum, titulo: ejercicio.titulo, correctAnswer: correctAnswer, canonicalExercise: canonicalExercise[exerciseNum] || exerciseNum, datasetFile: config.EXERCISE_DATASET_MAP[exerciseNum] || "unknown" });
+    // Extract exercise AC refs for KG lookup
+    var tc = ejercicio.tutorContext || {};
+    var acRefs = Array.isArray(tc.ac_refs) ? tc.ac_refs.map(function(a) { return String(a).toUpperCase().trim(); }).filter(Boolean) : [];
+
+    emitEvent("exercise_loaded", "end", { exerciseNum: exerciseNum, titulo: ejercicio.titulo, correctAnswer: correctAnswer, acRefs: acRefs, canonicalExercise: canonicalExercise[exerciseNum] || exerciseNum, datasetFile: config.EXERCISE_DATASET_MAP[exerciseNum] || "unknown" });
 
     // Use canonical exercise number for retrieval (exercise 2 → 1 in ChromaDB)
     var searchNum = canonicalExercise[exerciseNum] || exerciseNum;
 
     // 3. Run RAG pipeline
-    emitEvent("pipeline_start", "start", { userMessage: userMessage.trim(), exerciseNum: searchNum, correctAnswer: correctAnswer, userId: userId });
+    emitEvent("pipeline_start", "start", { userMessage: userMessage.trim(), exerciseNum: searchNum, correctAnswer: correctAnswer, acRefs: acRefs, userId: userId });
     var pipelineStart = Date.now();
-    var ragResult = await runFullPipeline(userMessage.trim(), searchNum, correctAnswer, userId);
+    var ragResult = await runFullPipeline(userMessage.trim(), searchNum, correctAnswer, userId, acRefs);
     var pipelineTime = Date.now() - pipelineStart;
     emitEvent("pipeline_end", "end", { decision: ragResult.decision, classification: ragResult.classification, augmentationLength: (ragResult.augmentation || "").length, sourcesCount: (ragResult.sources || []).length, pipelineTimeMs: pipelineTime });
 
@@ -410,7 +414,32 @@ router.post("/chat/stream", async function (req, res, next) {
         emitEvent("ollama_retry", "end", { reason: "answer_directive", responseLength: fullResponse.length });
       }
 
-      // 11e. Check if the LLM mixed languages
+      // 11e. Check if the tutor introduces resistances the student never mentioned
+      var studentMentioned = {};
+      for (let i = 0; i < history.length; i++) {
+        if (history[i].role === "user") {
+          var rm = (history[i].content || "").match(/R\d+/gi);
+          if (rm) { for (let r = 0; r < rm.length; r++) { studentMentioned[rm[r].toUpperCase()] = true; } }
+        }
+      }
+      var studentMentionedArr = Object.keys(studentMentioned);
+      var introCheck = checkNewElementIntroduction(fullResponse, studentMentionedArr, correctAnswer);
+      emitEvent("guardrail_new_element", "end", { responsePreview: fullResponse, studentMentioned: studentMentionedArr, result: introCheck, passed: !introCheck.introduced, check: "Checks if LLM names a resistance the student has never mentioned" });
+      if (introCheck.introduced) {
+        guardrailTriggered = true;
+        console.log("[RAG] Guardrail triggered (new element): " + introCheck.details);
+        emitEvent("ollama_retry", "start", { reason: "new_element_introduction", retryCount: 1 });
+
+        var introPrompt = augmentedPrompt + getNewElementIntroductionInstruction();
+        var introRetry = [{ role: "system", content: introPrompt }];
+        for (let i = 0; i < history.length; i++) {
+          introRetry.push(history[i]);
+        }
+        fullResponse = await callOllama(introRetry);
+        emitEvent("ollama_retry", "end", { reason: "new_element_introduction", responseLength: fullResponse.length });
+      }
+
+      // 11f. Check if the LLM mixed languages
       var userLangCode = detectLanguage(text);
       var mixCheck = checkLanguageMix(fullResponse, userLangCode);
       emitEvent("guardrail_language_mix", "end", { responsePreview: fullResponse, userLangCode: userLangCode, result: mixCheck, passed: !mixCheck.mixed, check: "Checks if LLM response mixes languages (e.g. Chinese characters in a Spanish response)" });

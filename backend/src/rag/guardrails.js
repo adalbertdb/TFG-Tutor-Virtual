@@ -402,4 +402,56 @@ function getAnswerDirectiveInstruction() {
   );
 }
 
-module.exports = { checkSolutionLeak, getStrongerInstruction, checkFalseConfirmation, getFalseConfirmationInstruction, checkStateReveal, getStateRevealInstruction, checkLanguageMix, getLanguageMixInstruction, checkAnswerDirective, getAnswerDirectiveInstruction };
+// --- New element introduction guardrail ---
+// Detects when the tutor names an answer element that the student has never mentioned.
+// studentMentioned: array of elements the student has mentioned across the conversation (e.g. ["R1", "R2"])
+// answerElements: the correct answer elements (e.g. ["R1", "R2", "R4"])
+function checkNewElementIntroduction(response, studentMentioned, answerElements) {
+  if (!Array.isArray(answerElements) || answerElements.length === 0) {
+    return { introduced: false, details: "" };
+  }
+
+  var mentionedSet = {};
+  if (Array.isArray(studentMentioned)) {
+    for (var i = 0; i < studentMentioned.length; i++) {
+      mentionedSet[String(studentMentioned[i]).toUpperCase().trim()] = true;
+    }
+  }
+
+  // Check all answer elements: if the tutor names one the student hasn't mentioned, flag it
+  var responseLower = response.toLowerCase();
+  for (var j = 0; j < answerElements.length; j++) {
+    var elem = String(answerElements[j]).toUpperCase().trim();
+    if (!mentionedSet[elem] && responseLower.includes(elem.toLowerCase())) {
+      return {
+        introduced: true,
+        details: "Response names '" + elem + "' which the student has never mentioned",
+      };
+    }
+  }
+
+  // Also check non-answer resistances (R\d+) that the student never mentioned
+  var responseResistances = extractResistances(response);
+  for (var k = 0; k < responseResistances.length; k++) {
+    if (!mentionedSet[responseResistances[k]]) {
+      return {
+        introduced: true,
+        details: "Response names '" + responseResistances[k] + "' which the student has never mentioned",
+      };
+    }
+  }
+
+  return { introduced: false, details: "" };
+}
+
+function getNewElementIntroductionInstruction() {
+  return (
+    "\n\nCR\u00cdTICO: Tu respuesta anterior NOMBR\u00d3 una resistencia que el alumno NUNCA ha mencionado. " +
+    "NO puedes introducir resistencias nuevas. Solo puedes referirte a resistencias que el alumno ya haya nombrado. " +
+    "Si el alumno no ha descubierto todas las resistencias, haz una pregunta CONCEPTUAL que le lleve a descubrirlas: " +
+    "'\u00bfHay otros caminos por los que pueda circular corriente?', '\u00bfCrees que todas las resistencias contribuyen?' " +
+    "NUNCA nombres una resistencia que el alumno no haya mencionado antes."
+  );
+}
+
+module.exports = { checkSolutionLeak, getStrongerInstruction, checkFalseConfirmation, getFalseConfirmationInstruction, checkStateReveal, getStateRevealInstruction, checkLanguageMix, getLanguageMixInstruction, checkAnswerDirective, getAnswerDirectiveInstruction, checkNewElementIntroduction, getNewElementIntroductionInstruction };

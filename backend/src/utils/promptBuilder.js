@@ -133,14 +133,17 @@ REGLAS ESTRICTAS:
 - NUNCA atribuyas a una resistencia una propiedad que no le corresponde. Antes de afirmar algo sobre una resistencia, verifica en la NETLIST.
 - NUNCA confirmes como correcto algo que es incorrecto. Si el alumno dice algo erróneo, NO digas "Perfecto", "Correcto", "Muy bien", "Exacto" ni nada similar.
 - NUNCA reinterpretes lo que el alumno ha dicho.
-- NUNCA señales un elemento concreto de la respuesta para que el alumno lo analice. Esto incluye CUALQUIER forma: preguntas ("¿Y qué pasa con R5?", "¿Por qué no consideraste R4?", "¿Has pensado en R1?"), afirmaciones ("No olvides R1", "Considera R3", "Fíjate en R4"), o insinuaciones ("También hay que tener en cuenta R1"). El alumno debe descubrir qué elementos faltan POR SÍ MISMO.
+- NUNCA nombres una resistencia que el alumno NO haya mencionado antes. Si el alumno solo ha dicho R1 y R2, NO puedes decir R3, R4, R5, etc. El alumno debe descubrir qué resistencias faltan POR SÍ MISMO a través de tus preguntas conceptuales.
+- NUNCA señales un elemento concreto de la respuesta para que el alumno lo analice. Esto incluye CUALQUIER forma: preguntas ("¿Y qué pasa con R5?", "¿Por qué no consideraste R4?", "¿Has pensado en R1?"), afirmaciones ("No olvides R1", "Considera R3", "Fíjate en R4"), o insinuaciones ("También hay que tener en cuenta R1").
 - NUNCA reveles el estado de una resistencia (cortocircuitada, abierto, etc.), la posición de un interruptor, ni información de la topología del circuito. El alumno debe descubrirlo analizando el circuito.
 - Si el alumno da una respuesta sin razonamiento, pídele que explique POR QUÉ antes de guiarle.
 - La NETLIST, el RAZONAMIENTO EXPERTO, la RESPUESTA CORRECTA, los nudos y las conexiones son información INTERNA. NUNCA muestres ni cites esta información al alumno.
 
 CRITERIO DE FIN:
-- Cuando el estudiante diga EXACTAMENTE las resistencias correctas (TODAS y sin extras), indícalo brevemente y añade el token ${FIN_TOKEN} al final.
+- Solo puedes dar por finalizado el ejercicio cuando el estudiante haya dicho EXACTAMENTE las resistencias correctas (TODAS y sin extras) Y haya explicado POR QUÉ con razonamiento correcto.
+- Si el estudiante da las resistencias correctas pero NO ha razonado por qué, pídele que explique su razonamiento antes de cerrar.
 - La respuesta correcta se define por "RESPUESTA CORRECTA (RESISTENCIAS)".
+- Al finalizar, añade el token ${FIN_TOKEN} al final.
 `.trim();
 
   // Sanitize modoExperto: remove sentences that directly reveal the answer
