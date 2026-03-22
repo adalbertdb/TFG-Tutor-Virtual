@@ -1,7 +1,7 @@
 {
-  "numQueries": 10,
-  "avgResponseLength": 218.1,
-  "socraticRate": 1.0,
-  "avgQuestionWords": 2.5,
+  "numQueries": 177,
+  "avgResponseLength": 207.3,
+  "socraticRate": 0.9887,
+  "avgQuestionWords": 1.51,
   "guardrailSafeRate": 1.0
 }

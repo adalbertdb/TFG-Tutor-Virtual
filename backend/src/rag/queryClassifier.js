@@ -14,8 +14,26 @@ const types = {
 // Note: in the correctWrongReasoning option, if the student gives the right resistances and uses a concept keyword, it will classify the answer as incorrect, so that the RAG will look for the knowledge graph and check if the concept was misunderstood or not.
 
 // Patterns for detection
-const greetingPatterns = ["hola", "buenos días", "buenas tardes", "buenas noches", "qué tal", "hey", "buenas"];
-const dontKnowPatterns = ["no lo sé", "no sé", "ni idea", "no tengo ni idea", "no tengo idea", "yo qué sé"];
+const greetingPatterns = [
+  // Spanish
+  "hola", "buenos días", "buenas tardes", "buenas noches", "qué tal", "buenas",
+  // English
+  "hello", "hi", "hey", "good morning", "good afternoon", "good evening",
+  // French
+  "bonjour", "salut", "bonsoir",
+  // Catalan/Valencian
+  "bon dia", "bona tarda", "bona nit",
+];
+const dontKnowPatterns = [
+  // Spanish
+  "no lo sé", "no sé", "ni idea", "no tengo ni idea", "no tengo idea", "yo qué sé",
+  // English
+  "i don't know", "i dont know", "no idea", "no clue", "i have no idea",
+  // French
+  "je ne sais pas", "je sais pas", "aucune idée",
+  // Catalan/Valencian
+  "no ho sé", "no sé", "ni idea",
+];
 const reasoningPatterns = ["dado que", "porque", "ya que", "debido a", "puesto que", "por eso", "por lo que"];
 
 // Concept keywords that may indicate wrong reasoning if used incorrectly

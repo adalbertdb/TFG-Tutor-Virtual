@@ -153,10 +153,11 @@ function checkFalseConfirmation(response, classification) {
 // Instruction to append when a false confirmation is detected
 function getFalseConfirmationInstruction() {
   return (
-    "\n\nCRÍTICO: Tu respuesta anterior CONFIRMÓ como correcto algo que el alumno dijo MAL. " +
-    "El alumno se ha equivocado. NO debes decir 'Perfecto', 'Correcto', 'Exactamente', 'Muy bien' ni nada similar. " +
-    "Debes hacerle una pregunta socrática que le haga reconsiderar su error. " +
-    "NO le digas directamente cuál es el error, pero tampoco le confirmes algo incorrecto."
+    "\n\nCRITICAL: Your previous response CONFIRMED as correct something the student got WRONG. " +
+    "The student made a mistake. You must NOT say 'Perfect', 'Correct', 'Exactly', 'Very good' or anything similar. " +
+    "You must ask a Socratic question that makes them reconsider their error. " +
+    "Do NOT tell them directly what the error is, but do NOT confirm something incorrect either. " +
+    "ALWAYS respond in the same language the student used in their last message."
   );
 }
 
@@ -221,21 +222,23 @@ function checkStateReveal(response) {
 // Instruction to append when the tutor reveals the state of a resistance
 function getStateRevealInstruction() {
   return (
-    "\n\nCRÍTICO: Tu respuesta anterior REVELÓ el estado de una resistencia directamente (cortocircuitada, abierto, etc.). " +
-    "Esa información es INTERNA y el alumno debe descubrirla por sí mismo. " +
-    "NO digas el estado de ninguna resistencia. En su lugar, haz una pregunta socrática que guíe al alumno " +
-    "a analizar el circuito y descubrir el estado por sí mismo. " +
-    "Por ejemplo: '¿Qué observas en los nudos donde está conectada esa resistencia?'"
+    "\n\nCRITICAL: Your previous response REVEALED the state of a resistor directly (short-circuited, open, etc.). " +
+    "That information is INTERNAL and the student must discover it on their own. " +
+    "Do NOT state the condition of any resistor. Instead, ask a Socratic question that guides the student " +
+    "to analyze the circuit and discover the state by themselves. " +
+    "For example: 'What do you observe at the nodes where that resistor is connected?' " +
+    "ALWAYS respond in the same language the student used in their last message."
   );
 }
 
 // Instruction to append to the prompt when a leak is detected, so the LLM regenerates without revealing
 function getStrongerInstruction() {
   return (
-    "\n\nCRÍTICO: Tu respuesta anterior reveló la solución directamente. " +
-    "NO debes listar las resistencias correctas juntas. NO debes decir cuáles son las resistencias correctas. " +
-    "NO debes confirmar respuestas incorrectas del alumno como correctas. " +
-    "En su lugar, haz UNA sola pregunta socrática corta que guíe al estudiante."
+    "\n\nCRITICAL: Your previous response revealed the solution directly. " +
+    "You must NOT list the correct resistors together. You must NOT say which resistors are correct. " +
+    "You must NOT confirm incorrect student answers as correct. " +
+    "Instead, ask ONE single short Socratic question that guides the student. " +
+    "ALWAYS respond in the same language the student used in their last message."
   );
 }
 
