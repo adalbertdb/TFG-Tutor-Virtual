@@ -130,11 +130,11 @@ function analyzeStudentResistances(resistances, correctAnswer) {
 
   // Add explicit tone guidance based on actual correctness
   if (wrongOnes.length > 0 && correctOnes.length > 0) {
-    text = text + "TONE: The answer is PARTIALLY correct. Do NOT use 'Perfect', 'Very good', 'Great'. Say something like 'You are on the right track, but not everything is correct' and guide them to reconsider the wrong parts.\n";
+    text = text + "TONO: La respuesta es PARCIALMENTE correcta. NO uses 'Perfecto', 'Muy bien', 'Genial'. Di algo como 'Vas por buen camino, pero no todo es correcto' y guía para reconsiderar las partes incorrectas.\n";
   } else if (wrongOnes.length > 0 && correctOnes.length === 0) {
-    text = text + "TONE: The answer is INCORRECT. Do NOT use any positive validation. Say 'That is not quite right' and ask a guiding question.\n";
+    text = text + "TONO: La respuesta es INCORRECTA. NO uses ninguna validación positiva. Di 'No es del todo correcto' y haz una pregunta guía.\n";
   } else if (missed.length > 0) {
-    text = text + "TONE: The answer is INCOMPLETE (correct so far, but missing resistances). Do NOT use 'Perfect' or 'Very good'. Say something like 'You are on the right track' and guide them to think about what else might be missing.\n";
+    text = text + "TONO: La respuesta es INCOMPLETA (correcta hasta ahora, pero faltan resistencias). NO uses 'Perfecto' ni 'Muy bien'. Di algo como 'Vas por buen camino' y guía a pensar qué más puede faltar.\n";
   }
   text = text + "\n";
   return text;
@@ -143,13 +143,13 @@ function analyzeStudentResistances(resistances, correctAnswer) {
 // Format classification hint for the LLM
 function formatClassificationHint(classification, correctAnswer) {
   const hints = {
-    dont_know: "The student does not know where to start. Ask ONE question about a fundamental concept (e.g., 'What conditions does a resistor need for current to flow through it?'). Do NOT mention specific resistors.",
-    single_word: "The student gave an answer without reasoning. Ask them to explain WHY they think that. Do not move forward until they reason.",
-    wrong_answer: "The student gave incorrect resistors. Ask them to explain their reasoning. If you detect an alternative conception (AC), focus on questioning THAT concept with a Socratic question. Do NOT mention specific resistors or reveal states.",
-    correct_no_reasoning: "The student got the correct answer but did not explain why. Ask them to justify their answer using circuit concepts. Do NOT confirm the answer until they reason.",
-    correct_wrong_reasoning: "The student got the correct answer but uses a wrong concept. Focus on correcting the alternative conception with a Socratic question about the concept, NOT about the resistors.",
-    correct_good_reasoning: "The student got the correct answer with good reasoning. Confirm briefly and finish.",
-    wrong_concept: "The student shows an alternative conception. Focus ONLY on questioning that wrong concept with a Socratic question. Do NOT guide toward specific resistors.",
+    dont_know: "El estudiante no sabe por dónde empezar. Hazle UNA pregunta sobre un concepto fundamental (ej: '¿Qué condiciones necesita una resistencia para que circule corriente por ella?'). NO menciones resistencias concretas.",
+    single_word: "El estudiante ha dado una respuesta sin razonamiento. Pídele que explique POR QUÉ cree eso. No avances hasta que razone.",
+    wrong_answer: "El estudiante ha dado resistencias incorrectas. Pídele que explique su razonamiento. Si detectas una concepción alternativa (AC), céntrate en cuestionar ESE concepto con una pregunta socrática. NO menciones resistencias concretas ni reveles estados.",
+    correct_no_reasoning: "El estudiante ha acertado pero no ha explicado por qué. Pídele que justifique su respuesta con conceptos de circuitos. NO des por buena la respuesta hasta que razone.",
+    correct_wrong_reasoning: "El estudiante ha acertado pero usa un concepto erróneo. Céntrate en corregir la concepción alternativa con una pregunta socrática sobre el concepto, NO sobre las resistencias.",
+    correct_good_reasoning: "El estudiante ha acertado con buen razonamiento. Confirma brevemente y finaliza.",
+    wrong_concept: "El estudiante muestra una concepción alternativa. Céntrate SOLO en cuestionar ese concepto erróneo con una pregunta socrática. NO guíes hacia resistencias concretas.",
   };
 
   const hint = hints[classification.type];
@@ -396,14 +396,13 @@ async function runFullPipeline(userMessage, exerciseNum, correctAnswer, userId) 
 
   // Append guardrail reminder
   result.augmentation += "[GUARDRAIL]\n";
-  result.augmentation += "CRITICAL RULES FOR YOUR RESPONSE:\n";
-  result.augmentation += "1. Do NOT reveal the correct answer or list correct resistors together.\n";
-  result.augmentation += "2. Do NOT confirm incorrect or PARTIALLY correct answers ('Perfect', 'Correct', 'Very good', 'Interesting', 'Good point'). If the answer is partially correct, say 'You are on the right track, but there is something to reconsider'. If incorrect, say 'That is not quite right'. If vague or minimal ('no', 'yes'), do NOT validate — just ask a guiding question.\n";
-  result.augmentation += "3. Do NOT name specific resistors for the student to analyze ('What about R5?', 'Look at R3').\n";
-  result.augmentation += "4. Do NOT reveal resistor states (short-circuited, open), switch positions, or connections between nodes.\n";
-  result.augmentation += "5. Ask ONE single Socratic question about a CONCEPT, not about a component.\n";
-  result.augmentation += "6. If the student shows an AC (alternative conception), focus on questioning THAT concept.\n";
-  result.augmentation += "7. ALWAYS respond in the same language the student used in their last message.\n";
+  result.augmentation += "REGLAS CRÍTICAS PARA TU RESPUESTA:\n";
+  result.augmentation += "1. NO reveles la respuesta correcta ni listes resistencias correctas juntas.\n";
+  result.augmentation += "2. NO confirmes respuestas incorrectas ('Perfecto', 'Correcto', 'Muy bien').\n";
+  result.augmentation += "3. NO nombres resistencias concretas para que el alumno las analice ('¿Qué pasa con R5?', 'Observa R3').\n";
+  result.augmentation += "4. NO reveles estados de resistencias (cortocircuitada, abierto), posiciones de interruptores, ni conexiones entre nudos.\n";
+  result.augmentation += "5. Haz UNA sola pregunta socrática sobre un CONCEPTO, no sobre un componente.\n";
+  result.augmentation += "6. Si el alumno muestra una AC (concepción alternativa), céntrate en cuestionar ESE concepto.\n";
 
   emitEvent("augmentation_built", "end", { augmentationLength: result.augmentation.length, decision: result.decision, classification: result.classification, sourcesCount: result.sources.length, sections: ["hint", history.length > 0 ? "history" : null, result.sources.length > 0 ? "examples" : null, "guardrail_reminder"].filter(Boolean), augmentationPreview: result.augmentation });
 

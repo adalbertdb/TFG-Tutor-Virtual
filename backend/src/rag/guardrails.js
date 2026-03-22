@@ -115,26 +115,12 @@ const confirmPhrases = [
   "perfecto", "correcto", "exacto", "exactamente", "muy bien",
   "eso es", "así es", "bien hecho", "en efecto", "efectivamente",
   "has identificado correctamente", "estás en lo correcto",
-  "buena observación", "buen trabajo", "genial", "excelente",
-  "buen punto", "interesante",
-  // English equivalents
-  "perfect", "exactly", "very good", "well done", "great",
-  "good point", "interesting", "excellent", "good job",
-  // French equivalents
-  "parfait", "très bien", "excellent", "exactement", "bien joué",
-  // Italian equivalents
-  "perfetto", "molto bene", "esattamente", "ottimo",
-  // German equivalents
-  "perfekt", "sehr gut", "genau", "ausgezeichnet",
-  // Catalan equivalents
-  "perfecte", "molt bé", "exactament",
+  "buena observación", "buen trabajo",
 ];
 
-// Check if the tutor is incorrectly confirming a wrong or incomplete answer
-// Triggers for wrong answers, wrong concepts, single words, and answers needing reasoning
+// Check if the tutor is incorrectly confirming a wrong answer
 function checkFalseConfirmation(response, classification) {
-  // Check when the student's answer is wrong, incomplete, or needs correction
-  const checkTypes = ["wrong_answer", "wrong_concept", "single_word", "correct_no_reasoning", "correct_wrong_reasoning"];
+  const checkTypes = ["wrong_answer", "wrong_concept", "single_word"];
   var shouldCheck = false;
   for (let i = 0; i < checkTypes.length; i++) {
     if (classification === checkTypes[i]) {
@@ -165,14 +151,10 @@ function checkFalseConfirmation(response, classification) {
 // Instruction to append when a false confirmation is detected
 function getFalseConfirmationInstruction() {
   return (
-    "\n\nCRITICAL: Your previous response used overly positive validation ('Perfect', 'Very good', 'Interesting', etc.) " +
-    "for an answer that is NOT fully correct or has not been justified with reasoning. " +
-    "You must NOT say 'Perfect', 'Correct', 'Exactly', 'Very good', 'Interesting', 'Good point', 'Great' or anything similar. " +
-    "If the answer is partially correct, say 'You are on the right track, but there is something to reconsider'. " +
-    "If the answer is wrong, say 'That is not quite right'. " +
-    "If the student gave a vague or minimal answer, simply ask them to explain their reasoning. " +
-    "You must ask a Socratic question that guides the student. " +
-    "ALWAYS respond in the same language the student used in their last message."
+    "\n\nCRÍTICO: Tu respuesta anterior CONFIRMÓ como correcto algo que el alumno dijo MAL. " +
+    "El alumno se ha equivocado. NO debes decir 'Perfecto', 'Correcto', 'Exactamente', 'Muy bien' ni nada similar. " +
+    "Debes hacerle una pregunta socrática que le haga reconsiderar su error. " +
+    "NO le digas directamente cuál es el error, pero tampoco le confirmes algo incorrecto."
   );
 }
 
@@ -237,23 +219,21 @@ function checkStateReveal(response) {
 // Instruction to append when the tutor reveals the state of a resistance
 function getStateRevealInstruction() {
   return (
-    "\n\nCRITICAL: Your previous response REVEALED the state of a resistor directly (short-circuited, open, etc.). " +
-    "That information is INTERNAL and the student must discover it on their own. " +
-    "Do NOT state the condition of any resistor. Instead, ask a Socratic question that guides the student " +
-    "to analyze the circuit and discover the state by themselves. " +
-    "For example: 'What do you observe at the nodes where that resistor is connected?' " +
-    "ALWAYS respond in the same language the student used in their last message."
+    "\n\nCRÍTICO: Tu respuesta anterior REVELÓ el estado de una resistencia directamente (cortocircuitada, abierto, etc.). " +
+    "Esa información es INTERNA y el alumno debe descubrirla por sí mismo. " +
+    "NO digas el estado de ninguna resistencia. En su lugar, haz una pregunta socrática que guíe al alumno " +
+    "a analizar el circuito y descubrir el estado por sí mismo. " +
+    "Por ejemplo: '¿Qué observas en los nudos donde está conectada esa resistencia?'"
   );
 }
 
 // Instruction to append to the prompt when a leak is detected, so the LLM regenerates without revealing
 function getStrongerInstruction() {
   return (
-    "\n\nCRITICAL: Your previous response revealed the solution directly. " +
-    "You must NOT list the correct resistors together. You must NOT say which resistors are correct. " +
-    "You must NOT confirm incorrect student answers as correct. " +
-    "Instead, ask ONE single short Socratic question that guides the student. " +
-    "ALWAYS respond in the same language the student used in their last message."
+    "\n\nCRÍTICO: Tu respuesta anterior reveló la solución directamente. " +
+    "NO debes listar las resistencias correctas juntas. NO debes decir cuáles son las resistencias correctas. " +
+    "NO debes confirmar respuestas incorrectas del alumno como correctas. " +
+    "En su lugar, haz UNA sola pregunta socrática corta que guíe al estudiante."
   );
 }
 
@@ -324,4 +304,102 @@ function getLanguageMixInstruction() {
   );
 }
 
-module.exports = { checkSolutionLeak, getStrongerInstruction, checkFalseConfirmation, getFalseConfirmationInstruction, checkStateReveal, getStateRevealInstruction, checkLanguageMix, getLanguageMixInstruction };
+// --- Answer directive guardrail ---
+// Detects when the tutor tells/suggests the student to consider, analyze, or look at
+// a specific element of the correct answer — this gives away part of the solution.
+// Generic: works for any topic (resistances, capacitors, voltages, concepts, etc.)
+
+const directivePhrases = [
+  // Spanish — affirmative
+  "no olvides", "no te olvides", "recuerda que", "recuerda considerar",
+  "considera ", "analiza ", "piensa en ", "ten en cuenta ",
+  "fíjate en ", "también deberías", "deberías considerar", "deberías analizar",
+  "no dejes de considerar", "hay que tener en cuenta",
+  // Spanish — question form (equally bad: directs to specific element)
+  "por qué no consideraste", "por qué no has considerado", "por qué no incluyes",
+  "por qué no mencionaste", "por qué no has mencionado", "por qué no incluiste",
+  "qué pasa con ", "qué ocurre con ", "qué hay de ", "y qué hay de ",
+  "has pensado en ", "has considerado ",
+  // English — affirmative
+  "don't forget", "do not forget", "don\u2019t forget", "consider ",
+  "analyze ", "analyse ", "think about ", "look at ",
+  "take into account", "remember that ", "you should also",
+  "you should consider", "also consider", "keep in mind",
+  // English — question form
+  "why didn't you consider", "why didn't you include", "why didn't you mention",
+  "what about ", "what happens with ", "have you considered ",
+  "have you thought about ", "did you consider ",
+  // French — affirmative
+  "n'oublie pas", "ne oublie pas", "n'oubliez pas", "ne oubliez pas",
+  "consid\u00e8re ", "consid\u00e9rer ", "pense \u00e0 ", "pensez \u00e0 ",
+  "regarde ", "regardez ", "analyse ", "analysez ",
+  "tiens compte", "tenez compte", "tu devrais aussi", "vous devriez aussi",
+  "rappele", "rappelle", "il faut aussi", "il faut consid\u00e9rer",
+  // French — question form
+  "pourquoi tu n'as pas considéré", "pourquoi n'as-tu pas", "qu'en est-il de ",
+  "et pour ", "as-tu pensé à ",
+  // German
+  "vergiss nicht", "denk an ", "denke an ", "betrachte ",
+  "analysiere ", "ber\u00fccksichtige ", "du solltest auch",
+  "was ist mit ", "hast du an ",
+  // Italian
+  "non dimenticare", "non dimenticarti", "considera ", "analizza ",
+  "pensa a ", "ricorda ", "ricordati di", "tieni conto",
+  "che ne dici di ", "hai considerato ",
+  // Catalan
+  "no oblidis", "considera ", "analitza ", "pensa en ", "recorda ",
+  "per què no has considerat", "què passa amb ",
+];
+
+// answerElements: array of correct answer items (e.g. ["R1","R2","R4"], ["C1","C3"], etc.)
+function checkAnswerDirective(response, answerElements) {
+  if (!Array.isArray(answerElements) || answerElements.length === 0) {
+    return { directed: false, details: "" };
+  }
+
+  var lowerElements = [];
+  for (var k = 0; k < answerElements.length; k++) {
+    lowerElements.push(String(answerElements[k]).toLowerCase());
+  }
+
+  // Split into sentences but preserve the delimiter so we can check question marks
+  var sentences = response.split(/[.\n]/);
+  for (var i = 0; i < sentences.length; i++) {
+    var sentLower = sentences[i].toLowerCase();
+
+    var foundElement = null;
+    for (var m = 0; m < lowerElements.length; m++) {
+      if (sentLower.includes(lowerElements[m])) {
+        foundElement = answerElements[m];
+        break;
+      }
+    }
+    if (!foundElement) continue;
+
+    // Check directive phrases — do NOT skip questions, because
+    // "¿por qué no consideraste R4?" is just as bad as "no olvides R4"
+    for (var j = 0; j < directivePhrases.length; j++) {
+      if (sentLower.includes(directivePhrases[j])) {
+        return {
+          directed: true,
+          details: "Response directs student to '" + foundElement + "' with: '" + directivePhrases[j].trim() + "'",
+        };
+      }
+    }
+  }
+
+  return { directed: false, details: "" };
+}
+
+function getAnswerDirectiveInstruction() {
+  return (
+    "\n\nCR\u00cdTICO: Tu respuesta anterior LE DIJO al alumno qu\u00e9 elemento considerar o analizar. " +
+    "Eso da parte de la respuesta. El alumno debe descubrir los elementos relevantes POR S\u00cd MISMO. " +
+    "NUNCA digas 'no olvides X', 'considera Y', 'piensa en Z', 'ten en cuenta W', etc. " +
+    "En su lugar, haz una pregunta CONCEPTUAL que le lleve a descubrir el elemento que le falta. " +
+    "Por ejemplo: '\u00bfHay otros caminos por los que pueda circular corriente entre esos puntos?' o " +
+    "'\u00bfQu\u00e9 otros componentes est\u00e1n conectados entre esos dos puntos del circuito?'"
+  );
+}
+
+module.exports = { checkSolutionLeak, getStrongerInstruction, checkFalseConfirmation, getFalseConfirmationInstruction, checkStateReveal, getStateRevealInstruction, checkLanguageMix, getLanguageMixInstruction, checkAnswerDirective, getAnswerDirectiveInstruction };

@@ -9,7 +9,7 @@ const fs = require("fs");
 const path = require("path");
 const config = require("./config");
 const { runFullPipeline } = require("./ragPipeline");
-const { checkSolutionLeak, getStrongerInstruction, checkFalseConfirmation, getFalseConfirmationInstruction, checkStateReveal, getStateRevealInstruction, checkLanguageMix, getLanguageMixInstruction } = require("./guardrails");
+const { checkSolutionLeak, getStrongerInstruction, checkFalseConfirmation, getFalseConfirmationInstruction, checkStateReveal, getStateRevealInstruction, checkLanguageMix, getLanguageMixInstruction, checkAnswerDirective, getAnswerDirectiveInstruction } = require("./guardrails");
 const { loadKG } = require("./knowledgeGraph");
 const { loadIndex } = require("./bm25");
 const { logInteraction } = require("./logger");
@@ -18,9 +18,8 @@ const { buildTutorSystemPrompt, getLanguageInstruction, detectLanguage } = requi
 const Ejercicio = require("../models/ejercicio");
 const Interaccion = require("../models/interaccion");
 
-// Append language instruction to the last user message in the array.
-// This is more effective than a separate system message because the LLM
-// pays more attention to user-role content right before generation.
+// Append language instruction to the last user message (recency bias).
+// Used ONLY in the main flow, NOT in guardrail retries.
 function injectLangIntoLastUserMsg(msgs, langInstr) {
   if (!langInstr) return;
   for (var j = msgs.length - 1; j >= 0; j--) {
@@ -118,7 +117,7 @@ function axiosOpts() {
 function buildSystemPrompt(ejercicio) {
   var systemPrompt = buildTutorSystemPrompt(ejercicio);
   if (typeof systemPrompt !== "string" || systemPrompt.trim() === "") {
-    systemPrompt = "You are a Socratic tutor. Respond in the same language as the student. Do not give the solution: guide with concrete questions.";
+    systemPrompt = "Eres un tutor socrático. Responde en español. No des la solución: guía con preguntas concretas.";
   }
   return systemPrompt;
 }
@@ -276,32 +275,21 @@ router.post("/chat/stream", async function (req, res, next) {
         var prevHistory = await loadHistory(iid);
         var hasConversation = prevHistory.length >= 2; // At least 1 exchange before this
 
-        if (ragResult.classification === "correct_good_reasoning"
-          || (ragResult.classification === "correct_no_reasoning" && hasConversation)) {
+        if (ragResult.classification === "correct_good_reasoning") {
           // Student gave correct answer and has been reasoning (or gave reasoning now) → finish
           emitEvent("deterministic_finish", "end", { classification: ragResult.classification, historyLength: prevHistory.length, finished: true });
 
-          // Generate finish message via LLM so it matches the student's language
-          var finishSystemPrompt = buildSystemPrompt(ejercicio) + getLanguageInstruction(text);
-          var finishMessages = [{ role: "system", content: finishSystemPrompt }];
-          for (let i = 0; i < prevHistory.length; i++) {
-            finishMessages.push(prevHistory[i]);
-          }
-          finishMessages.push({
-            role: "user",
-            content: "INTERNAL INSTRUCTION (not a student message): The student just gave the correct answer with good reasoning. " +
-              "Generate a short congratulatory message confirming they identified the resistors correctly, and ask if they have any remaining questions about the exercise. " +
-              "Respond in the SAME LANGUAGE the student has been using in the conversation. End your message with the exact token " + FIN_TOKEN
-          });
-          injectLangIntoLastUserMsg(finishMessages, langInstruction);
+          // Use language-appropriate hardcoded finish message
+          var userLang = detectLanguage(text);
           var finishMsg;
-          try {
-            finishMsg = await callOllama(finishMessages);
-            if (!finishMsg.includes(FIN_TOKEN)) {
-              finishMsg = finishMsg + FIN_TOKEN;
-            }
-          } catch (e) {
+          if (userLang === "en") {
             finishMsg = "Correct! You have correctly identified the resistors. Do you have any remaining questions about the exercise?" + FIN_TOKEN;
+          } else if (userLang === "fr") {
+            finishMsg = "Correct ! Vous avez bien identifié les résistances. Avez-vous des questions sur l'exercice ?" + FIN_TOKEN;
+          } else if (userLang === "ca") {
+            finishMsg = "Correcte! Has identificat bé les resistències. Tens algun dubte sobre l'exercici?" + FIN_TOKEN;
+          } else {
+            finishMsg = "¡Correcto! Has identificado bien las resistencias. ¿Te ha quedado alguna duda sobre el ejercicio?" + FIN_TOKEN;
           }
           sseSend(res, { chunk: finishMsg });
 
@@ -325,7 +313,7 @@ router.post("/chat/stream", async function (req, res, next) {
           emitEvent("request_end", "end", { totalTimeMs: Date.now() - startTime });
           return;
         }
-        // correct_no_reasoning without history → fall through to LLM to ask for reasoning
+        // correct_no_reasoning → always fall through to LLM to ask for reasoning (student must explain WHY)
         // correct_wrong_reasoning → fall through to LLM to correct the concept
         emitEvent("deterministic_finish", "skip", { classification: ragResult.classification, historyLength: prevHistory.length, finished: false });
       }
@@ -362,12 +350,11 @@ router.post("/chat/stream", async function (req, res, next) {
         console.log("[RAG] Guardrail triggered (leak): " + leakCheck.details);
         emitEvent("ollama_retry", "start", { reason: "solution_leak", retryCount: 1 });
 
-        var strongerPrompt = augmentedPrompt + getStrongerInstruction() + langInstruction;
+        var strongerPrompt = augmentedPrompt + getStrongerInstruction();
         var retryMessages = [{ role: "system", content: strongerPrompt }];
         for (let i = 0; i < history.length; i++) {
           retryMessages.push(history[i]);
         }
-        injectLangIntoLastUserMsg(retryMessages, langInstruction);
         fullResponse = await callOllama(retryMessages);
         emitEvent("ollama_retry", "end", { reason: "solution_leak", responseLength: fullResponse.length });
       }
@@ -380,12 +367,11 @@ router.post("/chat/stream", async function (req, res, next) {
         console.log("[RAG] Guardrail triggered (false confirm): " + confirmCheck.details);
         emitEvent("ollama_retry", "start", { reason: "false_confirmation", retryCount: 1 });
 
-        var confirmPrompt = augmentedPrompt + getFalseConfirmationInstruction() + langInstruction;
+        var confirmPrompt = augmentedPrompt + getFalseConfirmationInstruction();
         var confirmRetry = [{ role: "system", content: confirmPrompt }];
         for (let i = 0; i < history.length; i++) {
           confirmRetry.push(history[i]);
         }
-        injectLangIntoLastUserMsg(confirmRetry, langInstruction);
         fullResponse = await callOllama(confirmRetry);
         emitEvent("ollama_retry", "end", { reason: "false_confirmation", responseLength: fullResponse.length });
       }
@@ -398,17 +384,33 @@ router.post("/chat/stream", async function (req, res, next) {
         console.log("[RAG] Guardrail triggered (state reveal): " + stateCheck.details);
         emitEvent("ollama_retry", "start", { reason: "state_reveal", retryCount: 1 });
 
-        var statePrompt = augmentedPrompt + getStateRevealInstruction() + langInstruction;
+        var statePrompt = augmentedPrompt + getStateRevealInstruction();
         var stateRetry = [{ role: "system", content: statePrompt }];
         for (let i = 0; i < history.length; i++) {
           stateRetry.push(history[i]);
         }
-        injectLangIntoLastUserMsg(stateRetry, langInstruction);
         fullResponse = await callOllama(stateRetry);
         emitEvent("ollama_retry", "end", { reason: "state_reveal", responseLength: fullResponse.length });
       }
 
-      // 11d. Check if the LLM mixed languages
+      // 11d. Check if the LLM directs student to a specific answer element
+      var directiveCheck = checkAnswerDirective(fullResponse, correctAnswer);
+      emitEvent("guardrail_answer_directive", "end", { responsePreview: fullResponse, correctAnswer: correctAnswer, result: directiveCheck, passed: !directiveCheck.directed, check: "Checks if LLM directs student to a specific correct answer element" });
+      if (directiveCheck.directed) {
+        guardrailTriggered = true;
+        console.log("[RAG] Guardrail triggered (answer directive): " + directiveCheck.details);
+        emitEvent("ollama_retry", "start", { reason: "answer_directive", retryCount: 1 });
+
+        var directivePrompt = augmentedPrompt + getAnswerDirectiveInstruction();
+        var directiveRetry = [{ role: "system", content: directivePrompt }];
+        for (let i = 0; i < history.length; i++) {
+          directiveRetry.push(history[i]);
+        }
+        fullResponse = await callOllama(directiveRetry);
+        emitEvent("ollama_retry", "end", { reason: "answer_directive", responseLength: fullResponse.length });
+      }
+
+      // 11e. Check if the LLM mixed languages
       var userLangCode = detectLanguage(text);
       var mixCheck = checkLanguageMix(fullResponse, userLangCode);
       emitEvent("guardrail_language_mix", "end", { responsePreview: fullResponse, userLangCode: userLangCode, result: mixCheck, passed: !mixCheck.mixed, check: "Checks if LLM response mixes languages (e.g. Chinese characters in a Spanish response)" });
@@ -417,12 +419,11 @@ router.post("/chat/stream", async function (req, res, next) {
         console.log("[RAG] Guardrail triggered (language mix): " + mixCheck.details);
         emitEvent("ollama_retry", "start", { reason: "language_mix", retryCount: 1 });
 
-        var mixPrompt = augmentedPrompt + getLanguageMixInstruction() + langInstruction;
+        var mixPrompt = augmentedPrompt + getLanguageMixInstruction();
         var mixRetry = [{ role: "system", content: mixPrompt }];
         for (let i = 0; i < history.length; i++) {
           mixRetry.push(history[i]);
         }
-        injectLangIntoLastUserMsg(mixRetry, langInstruction);
         fullResponse = await callOllama(mixRetry);
         emitEvent("ollama_retry", "end", { reason: "language_mix", responseLength: fullResponse.length });
       }

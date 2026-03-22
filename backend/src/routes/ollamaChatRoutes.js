@@ -15,7 +15,8 @@ const { checkLanguageMix, getLanguageMixInstruction } = require("../rag/guardrai
 // Lo dejo para no romperte nada, pero si ya lo cargas en index.js, puedes quitar esta línea.
 require("dotenv").config();
 
-// Append language instruction to the last user message in the array.
+// Append language instruction to the last user message (recency bias).
+// Used ONLY in the main flow, NOT in guardrail retries.
 function injectLangIntoLastUserMsg(msgs, langInstr) {
   if (!langInstr) return;
   for (var j = msgs.length - 1; j >= 0; j--) {
@@ -129,7 +130,7 @@ function buildSystemPrompt(ejercicio) {
 
   if (typeof systemPrompt !== "string" || systemPrompt.trim() === "") {
     systemPrompt =
-      "You are a Socratic tutor. Respond in the same language as the student. Do not give the solution: guide with concrete questions.";
+      "Eres un tutor socrático. Responde en español. No des la solución: guía con preguntas concretas.";
   }
   return systemPrompt;
 }
@@ -388,64 +389,17 @@ router.post("/chat/stream", async (req, res) => {
     const correctNow = isCorrectAnswerForExercise({ userText: text, ejercicio });
 
     if (correctNow) {
-      // Generate finish message via LLM so it matches the student's language
-      const finishHistory = await loadLastMessages(iid);
-      const finishSystemPrompt = buildSystemPrompt(ejercicio) + langInstruction;
-      const finishMessages = [
-        { role: "system", content: finishSystemPrompt },
-        ...finishHistory,
-        {
-          role: "user",
-          content: "INTERNAL INSTRUCTION (not a student message): The student just gave the correct answer. " +
-            "Generate a short message confirming they gave the exact correct answer. " +
-            "Respond in the SAME LANGUAGE the student has been using in the conversation. End your message with the exact token " + FIN_TOKEN
-        },
-      ];
-      injectLangIntoLastUserMsg(finishMessages, langInstruction);
-
+      // Use language-appropriate hardcoded finish message
+      const userLang = detectLanguage(text);
       let assistant;
-      try {
-        const finishResp = await axios.post(
-          `${baseUrl}/api/chat`,
-          {
-            model: OLLAMA_MODEL,
-            stream: false,
-            keep_alive: OLLAMA_KEEP_ALIVE,
-            messages: finishMessages,
-            options: {
-              num_predict: OLLAMA_NUM_PREDICT,
-              num_ctx: OLLAMA_NUM_CTX,
-              temperature: OLLAMA_TEMPERATURE,
-            },
-          },
-          { timeout: OLLAMA_TIMEOUT_MS, ...axiosConfigForBaseUrl(baseUrl) }
-        );
-        assistant = (finishResp.data.message && finishResp.data.message.content) || "";
-
-        // Language mix guardrail: retry if response mixes languages
-        var finUserLang = detectLanguage(text);
-        var finMixCheck = checkLanguageMix(assistant, finUserLang);
-        if (finMixCheck.mixed) {
-          console.log("[OLLAMA] Guardrail triggered (language mix in finish): " + finMixCheck.details);
-          var retryFinishMsgs = [
-            { role: "system", content: finishSystemPrompt + getLanguageMixInstruction() + langInstruction },
-            ...finishHistory,
-            finishMessages[finishMessages.length - 1],
-          ];
-          injectLangIntoLastUserMsg(retryFinishMsgs, langInstruction);
-          var retryFinResp = await axios.post(
-            `${baseUrl}/api/chat`,
-            { model: OLLAMA_MODEL, stream: false, keep_alive: OLLAMA_KEEP_ALIVE, messages: retryFinishMsgs, options: { num_predict: OLLAMA_NUM_PREDICT, num_ctx: OLLAMA_NUM_CTX, temperature: OLLAMA_TEMPERATURE } },
-            { timeout: OLLAMA_TIMEOUT_MS, ...axiosConfigForBaseUrl(baseUrl) }
-          );
-          assistant = (retryFinResp.data.message && retryFinResp.data.message.content) || assistant;
-        }
-
-        if (!assistant.includes(FIN_TOKEN)) {
-          assistant = assistant + FIN_TOKEN;
-        }
-      } catch (e) {
+      if (userLang === "en") {
         assistant = `Correct! You gave the exact answer.${FIN_TOKEN}`;
+      } else if (userLang === "fr") {
+        assistant = `Correct ! Vous avez donné la réponse exacte.${FIN_TOKEN}`;
+      } else if (userLang === "ca") {
+        assistant = `Correcte! Has donat la resposta exacta.${FIN_TOKEN}`;
+      } else {
+        assistant = `Correcto. Has dado la respuesta exacta.${FIN_TOKEN}`;
       }
 
       // Enviamos al cliente como stream "normal"
@@ -462,7 +416,7 @@ router.post("/chat/stream", async (req, res) => {
     }
 
     // Construir messages: system + últimos N
-    const systemPrompt = buildSystemPrompt(ejercicio) + langInstruction;
+    const systemPrompt = buildSystemPrompt(ejercicio) + (langInstruction || "");
     const history = await loadLastMessages(iid);
     const messages = [{ role: "system", content: systemPrompt }, ...history];
     injectLangIntoLastUserMsg(messages, langInstruction);
@@ -601,7 +555,7 @@ router.post("/chat/start-exercise", async (req, res) => {
     const ejercicio = await Ejercicio.findById(exerciseId).lean();
     if (!ejercicio) return res.status(404).json({ message: "Ejercicio no encontrado." });
 
-    const systemPrompt = buildSystemPrompt(ejercicio) + getLanguageInstruction(firstMsg);
+    const systemPrompt = buildSystemPrompt(ejercicio) + (getLanguageInstruction(firstMsg) || "");
 
     const interaccion = await Interaccion.create({
       usuario_id: userId,
@@ -613,43 +567,16 @@ router.post("/chat/start-exercise", async (req, res) => {
 
     // ✅ Si el primer mensaje ya es respuesta correcta, cerramos determinista también aquí
     if (isCorrectAnswerForExercise({ userText: firstMsg, ejercicio })) {
-      // Generate finish message via LLM so it matches the student's language
-      var startLangInstr = getLanguageInstruction(firstMsg);
-      const finishMessages = [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: firstMsg },
-        {
-          role: "user",
-          content: "INTERNAL INSTRUCTION (not a student message): The student just gave the correct answer. " +
-            "Generate a short message confirming they gave the exact correct answer. " +
-            "Respond in the SAME LANGUAGE the student has been using in the conversation. End your message with the exact token " + FIN_TOKEN
-        },
-      ];
-      injectLangIntoLastUserMsg(finishMessages, startLangInstr);
-
+      const startLang = detectLanguage(firstMsg);
       let assistant;
-      try {
-        const finishResp = await axios.post(
-          `${baseUrl}/api/chat`,
-          {
-            model: OLLAMA_MODEL,
-            stream: false,
-            keep_alive: OLLAMA_KEEP_ALIVE,
-            messages: finishMessages,
-            options: {
-              num_predict: OLLAMA_NUM_PREDICT,
-              num_ctx: OLLAMA_NUM_CTX,
-              temperature: OLLAMA_TEMPERATURE,
-            },
-          },
-          { timeout: OLLAMA_TIMEOUT_MS, ...axiosConfigForBaseUrl(baseUrl) }
-        );
-        assistant = (finishResp.data.message && finishResp.data.message.content) || "";
-        if (!assistant.includes(FIN_TOKEN)) {
-          assistant = assistant + FIN_TOKEN;
-        }
-      } catch (e) {
+      if (startLang === "en") {
         assistant = `Correct! You gave the exact answer.${FIN_TOKEN}`;
+      } else if (startLang === "fr") {
+        assistant = `Correct ! Vous avez donné la réponse exacte.${FIN_TOKEN}`;
+      } else if (startLang === "ca") {
+        assistant = `Correcte! Has donat la resposta exacta.${FIN_TOKEN}`;
+      } else {
+        assistant = `Correcto. Has dado la respuesta exacta.${FIN_TOKEN}`;
       }
 
       await Interaccion.updateOne(
@@ -695,15 +622,14 @@ router.post("/chat/start-exercise", async (req, res) => {
     var startMixCheck = checkLanguageMix(assistant, startLangCode);
     if (startMixCheck.mixed) {
       console.log("[OLLAMA] Guardrail triggered (language mix in start-exercise): " + startMixCheck.details);
-      var startLangInstr2 = getLanguageInstruction(firstMsg);
       try {
         var retryStartResp = await axios.post(
           `${baseUrl}/api/chat`,
           {
             model: OLLAMA_MODEL, stream: false, keep_alive: OLLAMA_KEEP_ALIVE,
             messages: [
-              { role: "system", content: systemPrompt + getLanguageMixInstruction() + startLangInstr2 },
-              { role: "user", content: firstMsg + "\n" + (startLangInstr2 || "") },
+              { role: "system", content: systemPrompt + getLanguageMixInstruction() },
+              { role: "user", content: firstMsg },
             ],
             options: { num_predict: OLLAMA_NUM_PREDICT, num_ctx: OLLAMA_NUM_CTX, temperature: OLLAMA_TEMPERATURE },
           },
