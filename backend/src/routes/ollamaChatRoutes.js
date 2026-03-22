@@ -8,7 +8,8 @@ const https = require("https");
 
 const Interaccion = require("../models/interaccion");
 const Ejercicio = require("../models/ejercicio");
-const { buildTutorSystemPrompt, getLanguageInstruction } = require("../utils/promptBuilder");
+const { buildTutorSystemPrompt, getLanguageInstruction, detectLanguage } = require("../utils/promptBuilder");
+const { checkLanguageMix, getLanguageMixInstruction } = require("../rag/guardrails");
 
 // ⚠️ Recomendación: dotenv se carga UNA vez en index.js.
 // Lo dejo para no romperte nada, pero si ya lo cargas en index.js, puedes quitar esta línea.
@@ -420,6 +421,26 @@ router.post("/chat/stream", async (req, res) => {
           { timeout: OLLAMA_TIMEOUT_MS, ...axiosConfigForBaseUrl(baseUrl) }
         );
         assistant = (finishResp.data.message && finishResp.data.message.content) || "";
+
+        // Language mix guardrail: retry if response mixes languages
+        var finUserLang = detectLanguage(text);
+        var finMixCheck = checkLanguageMix(assistant, finUserLang);
+        if (finMixCheck.mixed) {
+          console.log("[OLLAMA] Guardrail triggered (language mix in finish): " + finMixCheck.details);
+          var retryFinishMsgs = [
+            { role: "system", content: finishSystemPrompt + getLanguageMixInstruction() + langInstruction },
+            ...finishHistory,
+            finishMessages[finishMessages.length - 1],
+          ];
+          injectLangIntoLastUserMsg(retryFinishMsgs, langInstruction);
+          var retryFinResp = await axios.post(
+            `${baseUrl}/api/chat`,
+            { model: OLLAMA_MODEL, stream: false, keep_alive: OLLAMA_KEEP_ALIVE, messages: retryFinishMsgs, options: { num_predict: OLLAMA_NUM_PREDICT, num_ctx: OLLAMA_NUM_CTX, temperature: OLLAMA_TEMPERATURE } },
+            { timeout: OLLAMA_TIMEOUT_MS, ...axiosConfigForBaseUrl(baseUrl) }
+          );
+          assistant = (retryFinResp.data.message && retryFinResp.data.message.content) || assistant;
+        }
+
         if (!assistant.includes(FIN_TOKEN)) {
           assistant = assistant + FIN_TOKEN;
         }
@@ -667,7 +688,32 @@ router.post("/chat/start-exercise", async (req, res) => {
       { timeout: OLLAMA_TIMEOUT_MS, ...axiosConfigForBaseUrl(baseUrl) }
     );
 
-    const assistant = ollamaResp?.data?.message?.content ?? "";
+    let assistant = ollamaResp?.data?.message?.content ?? "";
+
+    // Language mix guardrail
+    var startLangCode = detectLanguage(firstMsg);
+    var startMixCheck = checkLanguageMix(assistant, startLangCode);
+    if (startMixCheck.mixed) {
+      console.log("[OLLAMA] Guardrail triggered (language mix in start-exercise): " + startMixCheck.details);
+      var startLangInstr2 = getLanguageInstruction(firstMsg);
+      try {
+        var retryStartResp = await axios.post(
+          `${baseUrl}/api/chat`,
+          {
+            model: OLLAMA_MODEL, stream: false, keep_alive: OLLAMA_KEEP_ALIVE,
+            messages: [
+              { role: "system", content: systemPrompt + getLanguageMixInstruction() + startLangInstr2 },
+              { role: "user", content: firstMsg + "\n" + (startLangInstr2 || "") },
+            ],
+            options: { num_predict: OLLAMA_NUM_PREDICT, num_ctx: OLLAMA_NUM_CTX, temperature: OLLAMA_TEMPERATURE },
+          },
+          { timeout: OLLAMA_TIMEOUT_MS, ...axiosConfigForBaseUrl(baseUrl) }
+        );
+        assistant = (retryStartResp.data?.message?.content) || assistant;
+      } catch (retryErr) {
+        console.error("[OLLAMA] Language mix retry failed:", retryErr?.message);
+      }
+    }
 
     await Interaccion.updateOne(
       { _id: interaccion._id },

@@ -272,16 +272,19 @@ for (var _k in SHORT_LANG_MAP) {
   SHORT_LANG_MAP_NORM[stripDiacritics(_k)] = SHORT_LANG_MAP[_k];
 }
 
-function getLanguageInstruction(text) {
+function detectLanguage(text) {
   if (typeof text !== "string" || text.trim().length < 2) {
     return "";
   }
   var trimmed = text.trim();
   var lower = trimmed.toLowerCase();
   var normalized = stripDiacritics(lower);
-  // Try curated map (exact → accent-normalized → tinyld fallback)
-  var code = SHORT_LANG_MAP[lower] || SHORT_LANG_MAP_NORM[normalized] || detect(trimmed);
-  if (!code || code === "") {
+  return SHORT_LANG_MAP[lower] || SHORT_LANG_MAP_NORM[normalized] || detect(trimmed) || "";
+}
+
+function getLanguageInstruction(text) {
+  var code = detectLanguage(text);
+  if (!code) {
     return "";
   }
   var langName = LANG_NAMES[code];
@@ -292,4 +295,4 @@ function getLanguageInstruction(text) {
     ". You MUST respond ONLY in " + langName + ".";
 }
 
-module.exports = { buildTutorSystemPrompt, getLanguageInstruction };
+module.exports = { buildTutorSystemPrompt, getLanguageInstruction, detectLanguage };

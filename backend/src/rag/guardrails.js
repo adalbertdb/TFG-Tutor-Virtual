@@ -257,4 +257,71 @@ function getStrongerInstruction() {
   );
 }
 
-module.exports = { checkSolutionLeak, getStrongerInstruction, checkFalseConfirmation, getFalseConfirmationInstruction, checkStateReveal, getStateRevealInstruction };
+// --- Language mixing guardrail ---
+
+// Unicode script patterns for detecting unexpected characters in responses
+var SCRIPT_PATTERNS = {
+  cjk: /[\u4E00-\u9FFF\u3400-\u4DBF]/g,
+  cyrillic: /[\u0400-\u04FF]/g,
+  arabic: /[\u0600-\u06FF\u0750-\u077F]/g,
+  thai: /[\u0E00-\u0E7F]/g,
+  devanagari: /[\u0900-\u097F]/g,
+  hangul: /[\uAC00-\uD7AF\u1100-\u11FF]/g,
+  kana: /[\u3040-\u309F\u30A0-\u30FF]/g,
+};
+
+// Languages that use Latin script
+var LATIN_LANGS = {
+  af:1, ca:1, cs:1, cy:1, da:1, de:1, en:1, es:1, et:1, eu:1, fi:1, fr:1,
+  ga:1, gl:1, hr:1, hu:1, id:1, is:1, it:1, lt:1, lv:1, ms:1, nl:1, no:1,
+  pl:1, pt:1, ro:1, sk:1, sl:1, sq:1, sv:1, tl:1, tr:1, vi:1,
+};
+
+function getForbiddenScripts(langCode) {
+  if (LATIN_LANGS[langCode]) {
+    return ["cjk", "cyrillic", "arabic", "thai", "devanagari", "hangul", "kana"];
+  }
+  if (langCode === "zh" || langCode === "ja") return ["cyrillic", "arabic", "thai", "devanagari", "hangul"];
+  if (langCode === "ko") return ["cyrillic", "arabic", "thai", "devanagari"];
+  if (langCode === "ru" || langCode === "uk" || langCode === "bg") return ["cjk", "arabic", "thai", "devanagari", "hangul", "kana"];
+  if (langCode === "ar" || langCode === "fa") return ["cjk", "cyrillic", "thai", "devanagari", "hangul", "kana"];
+  if (langCode === "th") return ["cjk", "cyrillic", "arabic", "devanagari", "hangul", "kana"];
+  if (langCode === "hi" || langCode === "mr") return ["cjk", "cyrillic", "arabic", "thai", "hangul", "kana"];
+  return [];
+}
+
+// Check if the response contains characters from scripts that don't match the user's language
+function checkLanguageMix(response, userLangCode) {
+  if (!userLangCode || typeof response !== "string") {
+    return { mixed: false, details: "" };
+  }
+
+  var forbidden = getForbiddenScripts(userLangCode);
+  for (var i = 0; i < forbidden.length; i++) {
+    var scriptName = forbidden[i];
+    var regex = SCRIPT_PATTERNS[scriptName];
+    if (!regex) continue;
+    var matches = response.match(regex);
+    if (matches && matches.length >= 2) {
+      return {
+        mixed: true,
+        details: "Response contains " + matches.length + " " + scriptName + " characters but user language is " + userLangCode,
+        detectedScript: scriptName,
+      };
+    }
+  }
+
+  return { mixed: false, details: "" };
+}
+
+// Instruction to append when language mixing is detected
+function getLanguageMixInstruction() {
+  return (
+    "\n\nCRITICAL: Your previous response MIXED LANGUAGES — you switched to a completely different language mid-response. " +
+    "This is unacceptable. You MUST write your ENTIRE response in the SAME language as the student's last message. " +
+    "Do NOT include any words, phrases, or characters from another language. " +
+    "Every single word must be in the student's language."
+  );
+}
+
+module.exports = { checkSolutionLeak, getStrongerInstruction, checkFalseConfirmation, getFalseConfirmationInstruction, checkStateReveal, getStateRevealInstruction, checkLanguageMix, getLanguageMixInstruction };

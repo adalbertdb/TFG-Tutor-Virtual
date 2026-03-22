@@ -9,12 +9,12 @@ const fs = require("fs");
 const path = require("path");
 const config = require("./config");
 const { runFullPipeline } = require("./ragPipeline");
-const { checkSolutionLeak, getStrongerInstruction, checkFalseConfirmation, getFalseConfirmationInstruction, checkStateReveal, getStateRevealInstruction } = require("./guardrails");
+const { checkSolutionLeak, getStrongerInstruction, checkFalseConfirmation, getFalseConfirmationInstruction, checkStateReveal, getStateRevealInstruction, checkLanguageMix, getLanguageMixInstruction } = require("./guardrails");
 const { loadKG } = require("./knowledgeGraph");
 const { loadIndex } = require("./bm25");
 const { logInteraction } = require("./logger");
 const { setRequestId, emitEvent } = require("./ragEventBus");
-const { buildTutorSystemPrompt, getLanguageInstruction } = require("../utils/promptBuilder");
+const { buildTutorSystemPrompt, getLanguageInstruction, detectLanguage } = require("../utils/promptBuilder");
 const Ejercicio = require("../models/ejercicio");
 const Interaccion = require("../models/interaccion");
 
@@ -406,6 +406,25 @@ router.post("/chat/stream", async function (req, res, next) {
         injectLangIntoLastUserMsg(stateRetry, langInstruction);
         fullResponse = await callOllama(stateRetry);
         emitEvent("ollama_retry", "end", { reason: "state_reveal", responseLength: fullResponse.length });
+      }
+
+      // 11d. Check if the LLM mixed languages
+      var userLangCode = detectLanguage(text);
+      var mixCheck = checkLanguageMix(fullResponse, userLangCode);
+      emitEvent("guardrail_language_mix", "end", { responsePreview: fullResponse, userLangCode: userLangCode, result: mixCheck, passed: !mixCheck.mixed, check: "Checks if LLM response mixes languages (e.g. Chinese characters in a Spanish response)" });
+      if (mixCheck.mixed) {
+        guardrailTriggered = true;
+        console.log("[RAG] Guardrail triggered (language mix): " + mixCheck.details);
+        emitEvent("ollama_retry", "start", { reason: "language_mix", retryCount: 1 });
+
+        var mixPrompt = augmentedPrompt + getLanguageMixInstruction() + langInstruction;
+        var mixRetry = [{ role: "system", content: mixPrompt }];
+        for (let i = 0; i < history.length; i++) {
+          mixRetry.push(history[i]);
+        }
+        injectLangIntoLastUserMsg(mixRetry, langInstruction);
+        fullResponse = await callOllama(mixRetry);
+        emitEvent("ollama_retry", "end", { reason: "language_mix", responseLength: fullResponse.length });
       }
 
       // 12. Send response to client as SSE
