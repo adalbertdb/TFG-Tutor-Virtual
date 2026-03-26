@@ -9,7 +9,7 @@ const fs = require("fs");
 const path = require("path");
 const config = require("./config");
 const { runFullPipeline } = require("./ragPipeline");
-const { checkSolutionLeak, getStrongerInstruction, checkFalseConfirmation, getFalseConfirmationInstruction, checkStateReveal, getStateRevealInstruction } = require("./guardrails");
+const { checkSolutionLeak, getStrongerInstruction, checkFalseConfirmation, getFalseConfirmationInstruction, checkPrematureConfirmation, getPartialConfirmationInstruction, checkStateReveal, getStateRevealInstruction } = require("./guardrails");
 const { loadKG } = require("./knowledgeGraph");
 const { loadIndex } = require("./bm25");
 const { logInteraction } = require("./logger");
@@ -264,8 +264,7 @@ router.post("/chat/stream", async function (req, res, next) {
         var hasConversation = prevHistory.length >= 2; // At least 1 exchange before this
         var lang = resolveLanguage(prevHistory);
 
-        if (ragResult.classification === "correct_good_reasoning"
-          || (ragResult.classification === "correct_no_reasoning" && hasConversation)) {
+        if (ragResult.classification === "correct_good_reasoning") {
           // Student gave correct answer and has been reasoning (or gave reasoning now) → finish
           emitEvent("deterministic_finish", "end", { classification: ragResult.classification, historyLength: prevHistory.length, finished: true });
           var finishMsg = getFinishMessages(lang).identifiedResistances + FIN_TOKEN;
@@ -352,6 +351,23 @@ router.post("/chat/stream", async function (req, res, next) {
         }
         fullResponse = await callOllama(confirmRetry);
         emitEvent("ollama_retry", "end", { reason: "false_confirmation", responseLength: fullResponse.length });
+      }
+
+      // 11b2. Check if the LLM prematurely confirms a partially correct answer
+      var prematureCheck = checkPrematureConfirmation(fullResponse, ragResult.classification);
+      emitEvent("guardrail_premature_confirm", "end", { responsePreview: fullResponse, classification: ragResult.classification, result: prematureCheck, passed: !prematureCheck.premature, check: "Checks if LLM prematurely confirms correct answer without reasoning" });
+      if (prematureCheck.premature) {
+        guardrailTriggered = true;
+        console.log("[RAG] Guardrail triggered (premature confirm): " + prematureCheck.details);
+        emitEvent("ollama_retry", "start", { reason: "premature_confirmation", retryCount: 1 });
+
+        var partialPrompt = augmentedPrompt + getPartialConfirmationInstruction(lang, ragResult.classification);
+        var partialRetry = [{ role: "system", content: partialPrompt }];
+        for (let i = 0; i < history.length; i++) {
+          partialRetry.push(history[i]);
+        }
+        fullResponse = await callOllama(partialRetry);
+        emitEvent("ollama_retry", "end", { reason: "premature_confirmation", responseLength: fullResponse.length });
       }
 
       // 11c. Check if the LLM reveals the state of a resistance (internal topology info)

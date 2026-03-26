@@ -7,6 +7,7 @@ const {
   stateRevealPatterns: stateRevealDict,
   getStrongerInstruction: getLangStrongerInstruction,
   getFalseConfirmationInstruction: getLangFalseConfirmationInstruction,
+  getPartialConfirmationInstruction: getLangPartialConfirmationInstruction,
   getStateRevealInstruction: getLangStateRevealInstruction,
 } = require("../utils/languageManager");
 
@@ -153,6 +154,42 @@ function getFalseConfirmationInstruction(lang) {
   return getLangFalseConfirmationInstruction(lang);
 }
 
+// Check if the tutor prematurely confirms a partially correct answer
+// (correct resistances but missing or wrong reasoning)
+function checkPrematureConfirmation(response, classification) {
+  var partialTypes = ["correct_no_reasoning", "correct_wrong_reasoning"];
+  var isPartial = false;
+  for (var i = 0; i < partialTypes.length; i++) {
+    if (classification === partialTypes[i]) {
+      isPartial = true;
+      break;
+    }
+  }
+  if (!isPartial) {
+    return { premature: false, details: "" };
+  }
+
+  var lower = response.toLowerCase().trim();
+  var firstPart = lower.substring(0, 60);
+
+  for (var i = 0; i < confirmPhrases.length; i++) {
+    if (firstPart.includes(confirmPhrases[i])) {
+      return {
+        premature: true,
+        classificationType: classification,
+        details: "Response prematurely confirms with: '" + confirmPhrases[i] + "' (classification: " + classification + ")",
+      };
+    }
+  }
+
+  return { premature: false, details: "" };
+}
+
+// Instruction to append when a premature confirmation is detected
+function getPartialConfirmationInstruction(lang, classificationType) {
+  return getLangPartialConfirmationInstruction(lang, classificationType);
+}
+
 // Phrases that reveal the state of a specific resistance (internal topology info, multi-language)
 const stateRevealPatterns = getAllPatterns(stateRevealDict);
 
@@ -203,4 +240,4 @@ function getStrongerInstruction(lang) {
   return getLangStrongerInstruction(lang);
 }
 
-module.exports = { checkSolutionLeak, getStrongerInstruction, checkFalseConfirmation, getFalseConfirmationInstruction, checkStateReveal, getStateRevealInstruction };
+module.exports = { checkSolutionLeak, getStrongerInstruction, checkFalseConfirmation, getFalseConfirmationInstruction, checkPrematureConfirmation, getPartialConfirmationInstruction, checkStateReveal, getStateRevealInstruction };

@@ -325,6 +325,62 @@ function getFalseConfirmationInstruction(lang) {
   );
 }
 
+// Instruction when the LLM prematurely confirms a partially correct answer
+// (correct resistances but missing or wrong reasoning)
+function getPartialConfirmationInstruction(lang, classificationType) {
+  var noReasoning = classificationType === "correct_no_reasoning";
+
+  if (lang === "val") {
+    if (noReasoning) {
+      return (
+        "\n\nCRÍTIC: La teua resposta anterior va donar per bona la resposta de l'alumne SENSE que haja justificat el seu raonament. " +
+        "L'alumne ha donat les resistències correctes, PERÒ encara no ha explicat PER QUÈ. " +
+        "NO has de dir 'Perfecte', 'Correcte', 'Molt bé', 'Exacte' ni res que confirme que ha acabat. " +
+        "Reconeix que va per bon camí i demana-li que explique el seu raonament amb conceptes de circuits."
+      );
+    }
+    return (
+      "\n\nCRÍTIC: La teua resposta anterior va confirmar com a correcte un raonament ERRONI de l'alumne. " +
+      "L'alumne ha donat les resistències correctes, PERÒ el seu raonament conté una concepció alternativa. " +
+      "NO has de dir 'Perfecte', 'Correcte', 'Molt bé' ni res que valide el seu raonament. " +
+      "Reconeix que va encaminat però qüestiona el concepte erroni amb una pregunta socràtica."
+    );
+  }
+
+  if (lang === "en") {
+    if (noReasoning) {
+      return (
+        "\n\nCRITICAL: Your previous response confirmed the student's answer as correct WITHOUT them justifying their reasoning. " +
+        "The student gave the correct resistances BUT has not explained WHY. " +
+        "Do NOT say 'Perfect', 'Correct', 'Very good', 'Exactly' or anything that confirms completion. " +
+        "Acknowledge they are on the right track and ask them to explain their reasoning using circuit concepts."
+      );
+    }
+    return (
+      "\n\nCRITICAL: Your previous response confirmed as correct something the student reasoned WRONGLY. " +
+      "The student gave the correct resistances BUT their reasoning contains a misconception. " +
+      "Do NOT say 'Perfect', 'Correct', 'Very good' or anything that validates their reasoning. " +
+      "Acknowledge they are on the right track but challenge the incorrect concept with a Socratic question."
+    );
+  }
+
+  // Default: Spanish
+  if (noReasoning) {
+    return (
+      "\n\nCRÍTICO: Tu respuesta anterior dio por buena la respuesta del alumno SIN que haya justificado su razonamiento. " +
+      "El alumno ha dado las resistencias correctas, PERO aún no ha explicado POR QUÉ. " +
+      "NO debes decir 'Perfecto', 'Correcto', 'Muy bien', 'Exacto' ni nada que confirme que ha terminado. " +
+      "Reconoce que va por buen camino y pídele que explique su razonamiento con conceptos de circuitos."
+    );
+  }
+  return (
+    "\n\nCRÍTICO: Tu respuesta anterior confirmó como correcto un razonamiento ERRÓNEO del alumno. " +
+    "El alumno ha dado las resistencias correctas, PERO su razonamiento contiene una concepción alternativa. " +
+    "NO debes decir 'Perfecto', 'Correcto', 'Muy bien' ni nada que valide su razonamiento. " +
+    "Reconoce que va encaminado pero cuestiona el concepto erróneo con una pregunta socrática."
+  );
+}
+
 function getStateRevealInstruction(lang) {
   if (lang === "val") {
     return (
@@ -439,6 +495,7 @@ module.exports = {
   getFinishMessages,
   getStrongerInstruction,
   getFalseConfirmationInstruction,
+  getPartialConfirmationInstruction,
   getStateRevealInstruction,
   normalizeToSpanish,
   getAllPatterns,
