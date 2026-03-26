@@ -1,14 +1,17 @@
 // Checks if the LLM response reveals the correct answer
 
-// Phrases that indicate the tutor is revealing the solution directly
-const revealPhrases = [
-  "la respuesta es", "la respuesta correcta es", "las resistencias son", "las resistencias correctas son", "la solución es",
-  "deberías responder", "la respuesta sería", "las resistencias por las que circula corriente son",
-  "las resistencias por las que no circula corriente son", "la respuesta final es", "la solución correcta es",
-  "son precisamente", "son exactamente", "las que contribuyen son", "las que influyen son",
-  "depende de", "dependen de", "las resistencias que contribuyen", "las resistencias relevantes son",
-  "las resistencias que afectan", "las resistencias correctas son", "la respuesta correcta sería",
-];
+const {
+  getAllPatterns,
+  revealPhrases: revealDict,
+  confirmPhrases: confirmDict,
+  stateRevealPatterns: stateRevealDict,
+  getStrongerInstruction: getLangStrongerInstruction,
+  getFalseConfirmationInstruction: getLangFalseConfirmationInstruction,
+  getStateRevealInstruction: getLangStateRevealInstruction,
+} = require("../utils/languageManager");
+
+// Phrases that indicate the tutor is revealing the solution directly (multi-language)
+const revealPhrases = getAllPatterns(revealDict);
 
 // Extract all resistance mentions (R1, R2, ...) 
 function extractResistances(text) {
@@ -110,13 +113,8 @@ function checkSolutionLeak(response, correctAnswer) {
   return { leaked: false, details: "" };
 }
 
-// Affirmative phrases that indicate the tutor is confirming a student's statement
-const confirmPhrases = [
-  "perfecto", "correcto", "exacto", "exactamente", "muy bien",
-  "eso es", "así es", "bien hecho", "en efecto", "efectivamente",
-  "has identificado correctamente", "estás en lo correcto",
-  "buena observación", "buen trabajo",
-];
+// Affirmative phrases that indicate the tutor is confirming a student's statement (multi-language)
+const confirmPhrases = getAllPatterns(confirmDict);
 
 // Check if the tutor is incorrectly confirming a wrong answer
 // classification must be wrong_answer, wrong_concept, or similar
@@ -151,35 +149,12 @@ function checkFalseConfirmation(response, classification) {
 }
 
 // Instruction to append when a false confirmation is detected
-function getFalseConfirmationInstruction() {
-  return (
-    "\n\nCRÍTICO: Tu respuesta anterior CONFIRMÓ como correcto algo que el alumno dijo MAL. " +
-    "El alumno se ha equivocado. NO debes decir 'Perfecto', 'Correcto', 'Exactamente', 'Muy bien' ni nada similar. " +
-    "Debes hacerle una pregunta socrática que le haga reconsiderar su error. " +
-    "NO le digas directamente cuál es el error, pero tampoco le confirmes algo incorrecto."
-  );
+function getFalseConfirmationInstruction(lang) {
+  return getLangFalseConfirmationInstruction(lang);
 }
 
-// Phrases that reveal the state of a specific resistance (internal topology info)
-const stateRevealPatterns = [
-  "está cortocircuitad",    // cortocircuitada/cortocircuitado
-  "está en cortocircuito",
-  "está en circuito abierto",
-  "está en abierto",
-  "está en serie",
-  "está en paralelo",
-  "no circula corriente por",
-  "no pasa corriente por",
-  "circula corriente por",
-  "pasa corriente por",
-  "tiene corriente cero",
-  "tiene tensión cero",
-  "tiene diferencia de potencial cero",
-  "no tiene caída de tensión",
-  "ambos terminales",
-  "mismo nudo",
-  "mismo punto",
-];
+// Phrases that reveal the state of a specific resistance (internal topology info, multi-language)
+const stateRevealPatterns = getAllPatterns(stateRevealDict);
 
 // Check if the response reveals the internal state of a specific resistance
 // e.g. "R5 está cortocircuitada" or "recuerda que R3 está en circuito abierto"
@@ -219,24 +194,13 @@ function checkStateReveal(response) {
 }
 
 // Instruction to append when the tutor reveals the state of a resistance
-function getStateRevealInstruction() {
-  return (
-    "\n\nCRÍTICO: Tu respuesta anterior REVELÓ el estado de una resistencia directamente (cortocircuitada, abierto, etc.). " +
-    "Esa información es INTERNA y el alumno debe descubrirla por sí mismo. " +
-    "NO digas el estado de ninguna resistencia. En su lugar, haz una pregunta socrática que guíe al alumno " +
-    "a analizar el circuito y descubrir el estado por sí mismo. " +
-    "Por ejemplo: '¿Qué observas en los nudos donde está conectada esa resistencia?'"
-  );
+function getStateRevealInstruction(lang) {
+  return getLangStateRevealInstruction(lang);
 }
 
 // Instruction to append to the prompt when a leak is detected, so the LLM regenerates without revealing
-function getStrongerInstruction() {
-  return (
-    "\n\nCRÍTICO: Tu respuesta anterior reveló la solución directamente. " +
-    "NO debes listar las resistencias correctas juntas. NO debes decir cuáles son las resistencias correctas. " +
-    "NO debes confirmar respuestas incorrectas del alumno como correctas. " +
-    "En su lugar, haz UNA sola pregunta socrática corta que guíe al estudiante."
-  );
+function getStrongerInstruction(lang) {
+  return getLangStrongerInstruction(lang);
 }
 
 module.exports = { checkSolutionLeak, getStrongerInstruction, checkFalseConfirmation, getFalseConfirmationInstruction, checkStateReveal, getStateRevealInstruction };

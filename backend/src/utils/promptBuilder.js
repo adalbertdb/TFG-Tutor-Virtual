@@ -1,5 +1,6 @@
 // backend/src/utils/promptBuilder.js
 
+const { getLanguageRules } = require("./languageManager");
 const FIN_TOKEN = "<FIN_EJERCICIO>";
 
 function safeStr(x) {
@@ -86,7 +87,8 @@ function buildResistanceSummary(netlist) {
   return summary;
 }
 
-function buildTutorSystemPrompt(ejercicio) {
+function buildTutorSystemPrompt(ejercicio, lang) {
+  lang = lang || "es";
   // Campos base del ejercicio
   const titulo = pickFirstStr(ejercicio, ["titulo", "nombre", "name"]);
   const enunciado = pickFirstStr(ejercicio, ["enunciado", "texto", "statement", "descripcion"]);
@@ -123,11 +125,9 @@ ENFOQUE PEDAGÓGICO (cómo piensa un experto):
 - Ejemplos de MALAS preguntas: "¿Qué pasa con R5?", "Analiza R3", "¿Cómo se relaciona R4 con N2?", "Considera R1".
 
 REGLAS ESTRICTAS:
-- Responde SIEMPRE en español.
+${getLanguageRules(lang)}
 - NO des la solución final directamente.
 - No uses analogías.
-- Mantén un tono claro, paciente y técnico.
-- Usa terminología correcta en español: di "tierra" (no "suelo"), "nudo" (no "nodo"), "condensador" (no "capacitor").
 - NUNCA atribuyas a una resistencia una propiedad que no le corresponde. Antes de afirmar algo sobre una resistencia, verifica en la NETLIST.
 - NUNCA confirmes como correcto algo que es incorrecto. Si el alumno dice algo erróneo, NO digas "Perfecto", "Correcto", "Muy bien", "Exacto" ni nada similar.
 - NUNCA reinterpretes lo que el alumno ha dicho.

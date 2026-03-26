@@ -9,6 +9,7 @@ const https = require("https");
 const Interaccion = require("../models/interaccion");
 const Ejercicio = require("../models/ejercicio");
 const { buildTutorSystemPrompt } = require("../utils/promptBuilder");
+const { resolveLanguage, getFinishMessages } = require("../utils/languageManager");
 
 // ⚠️ Recomendación: dotenv se carga UNA vez en index.js.
 // Lo dejo para no romperte nada, pero si ya lo cargas en index.js, puedes quitar esta línea.
@@ -112,8 +113,8 @@ function getOllamaBaseUrl(req) {
   return { mode: mode || "default", baseUrl: normalizeBaseUrl(chosen) };
 }
 
-function buildSystemPrompt(ejercicio) {
-  let systemPrompt = buildTutorSystemPrompt(ejercicio);
+function buildSystemPrompt(ejercicio, lang) {
+  let systemPrompt = buildTutorSystemPrompt(ejercicio, lang);
 
   if (typeof systemPrompt !== "string" || systemPrompt.trim() === "") {
     systemPrompt =
@@ -374,11 +375,15 @@ router.post("/chat/stream", async (req, res) => {
     // ============================
     const correctNow = isCorrectAnswerForExercise({ userText: text, ejercicio });
 
+    // Resolve active language from conversation history
+    const history = await loadLastMessages(iid);
+    const lang = resolveLanguage(history);
+
     if (correctNow) {
       // Mensaje corto y token EXACTO al final (sin espacios extra)
-      const assistant = `Correcto. Has dado la respuesta exacta.${FIN_TOKEN}`;
+      const assistant = `${getFinishMessages(lang).exactAnswer}${FIN_TOKEN}`;
 
-      // Enviamos al cliente como stream “normal”
+      // Enviamos al cliente como stream "normal"
       sseSend(res, { chunk: assistant });
 
       // Guardamos y cerramos
@@ -392,8 +397,7 @@ router.post("/chat/stream", async (req, res) => {
     }
 
     // Construir messages: system + últimos N
-    const systemPrompt = buildSystemPrompt(ejercicio);
-    const history = await loadLastMessages(iid);
+    const systemPrompt = buildSystemPrompt(ejercicio, lang);
     const messages = [{ role: "system", content: systemPrompt }, ...history];
 
     dlog(reqId, "🧱 messages", {
@@ -530,7 +534,8 @@ router.post("/chat/start-exercise", async (req, res) => {
     const ejercicio = await Ejercicio.findById(exerciseId).lean();
     if (!ejercicio) return res.status(404).json({ message: "Ejercicio no encontrado." });
 
-    const systemPrompt = buildSystemPrompt(ejercicio);
+    // First message: no history yet, default to Spanish
+    const systemPrompt = buildSystemPrompt(ejercicio, "es");
 
     const interaccion = await Interaccion.create({
       usuario_id: userId,
@@ -542,7 +547,7 @@ router.post("/chat/start-exercise", async (req, res) => {
 
     // ✅ Si el primer mensaje ya es respuesta correcta, cerramos determinista también aquí
     if (isCorrectAnswerForExercise({ userText: firstMsg, ejercicio })) {
-      const assistant = `Correcto. Has dado la respuesta exacta.${FIN_TOKEN}`;
+      const assistant = `${getFinishMessages("es").exactAnswer}${FIN_TOKEN}`;
 
       await Interaccion.updateOne(
         { _id: interaccion._id },

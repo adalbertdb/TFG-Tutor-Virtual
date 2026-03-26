@@ -1,5 +1,13 @@
 // Rule-based query classifier for student messages (no LLM needed)
 
+const {
+  getAllPatterns,
+  greetingPatterns: greetingDict,
+  dontKnowPatterns: dontKnowDict,
+  reasoningPatterns: reasoningDict,
+  conceptKeywords: conceptDict,
+} = require("../utils/languageManager");
+
 // Classification types
 const types = {
   greeting: "greeting",                                 // Hola, ¿qué tal?
@@ -13,20 +21,13 @@ const types = {
 };
 // Note: in the correctWrongReasoning option, if the student gives the right resistances and uses a concept keyword, it will classify the answer as incorrect, so that the RAG will look for the knowledge graph and check if the concept was misunderstood or not.
 
-// Patterns for detection
-const greetingPatterns = ["hola", "buenos días", "buenas tardes", "buenas noches", "qué tal", "hey", "buenas"];
-const dontKnowPatterns = ["no lo sé", "no sé", "ni idea", "no tengo ni idea", "no tengo idea", "yo qué sé"];
-const reasoningPatterns = ["dado que", "porque", "ya que", "debido a", "puesto que", "por eso", "por lo que"];
+// Patterns for detection (multi-language: Spanish, Valencian, English)
+const greetingPatterns = getAllPatterns(greetingDict);
+const dontKnowPatterns = getAllPatterns(dontKnowDict);
+const reasoningPatterns = getAllPatterns(reasoningDict);
 
 // Concept keywords that may indicate wrong reasoning if used incorrectly
-const conceptKeywords = [
-  "divisor de tensión", "divisor de corriente",
-  "serie", "paralelo",
-  "cortocircuito", "cortocircuitada", "cortocircuitado", "corto",
-  "circuito abierto", "abierto", "abierta",
-  "se consume", "se gasta", "atenuación",
-  "interruptor cerrado", "interruptor abierto",
-];
+const conceptKeywords = getAllPatterns(conceptDict);
 
 // Extract resistance names (R1, r2, ...) from a message -> Returns one array like ["R1", "R2", "R4"]
 function extractResistances(message) {

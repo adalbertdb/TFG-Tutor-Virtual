@@ -15,6 +15,7 @@ const { loadIndex } = require("./bm25");
 const { logInteraction } = require("./logger");
 const { setRequestId, emitEvent } = require("./ragEventBus");
 const { buildTutorSystemPrompt } = require("../utils/promptBuilder");
+const { resolveLanguage, getFinishMessages } = require("../utils/languageManager");
 const Ejercicio = require("../models/ejercicio");
 const Interaccion = require("../models/interaccion");
 
@@ -102,8 +103,8 @@ function axiosOpts() {
 }
 
 // Build system prompt with fallback (same as existing handler)
-function buildSystemPrompt(ejercicio) {
-  var systemPrompt = buildTutorSystemPrompt(ejercicio);
+function buildSystemPrompt(ejercicio, lang) {
+  var systemPrompt = buildTutorSystemPrompt(ejercicio, lang);
   if (typeof systemPrompt !== "string" || systemPrompt.trim() === "") {
     systemPrompt = "Eres un tutor socrático. Responde en español. No des la solución: guía con preguntas concretas.";
   }
@@ -261,12 +262,13 @@ router.post("/chat/stream", async function (req, res, next) {
         // Load history to check if the student has already been reasoning
         var prevHistory = await loadHistory(iid);
         var hasConversation = prevHistory.length >= 2; // At least 1 exchange before this
+        var lang = resolveLanguage(prevHistory);
 
         if (ragResult.classification === "correct_good_reasoning"
           || (ragResult.classification === "correct_no_reasoning" && hasConversation)) {
           // Student gave correct answer and has been reasoning (or gave reasoning now) → finish
           emitEvent("deterministic_finish", "end", { classification: ragResult.classification, historyLength: prevHistory.length, finished: true });
-          var finishMsg = "¡Correcto! Has identificado bien las resistencias. ¿Te ha quedado alguna duda sobre el ejercicio?" + FIN_TOKEN;
+          var finishMsg = getFinishMessages(lang).identifiedResistances + FIN_TOKEN;
           sseSend(res, { chunk: finishMsg });
 
           await Interaccion.updateOne(
@@ -295,12 +297,13 @@ router.post("/chat/stream", async function (req, res, next) {
       }
 
       // 8. Build augmented system prompt (base prompt + RAG context)
-      var basePrompt = buildSystemPrompt(ejercicio);
+      var history = await loadHistory(iid);
+      var lang = resolveLanguage(history);
+      var basePrompt = buildSystemPrompt(ejercicio, lang);
       var augmentedPrompt = basePrompt + "\n\n" + ragResult.augmentation;
       emitEvent("prompt_built", "end", { systemPromptLength: basePrompt.length, ragAugmentationLength: ragResult.augmentation.length, totalPromptLength: augmentedPrompt.length, augmentationPreview: ragResult.augmentation });
 
       // 9. Load conversation history (last N messages)
-      var history = await loadHistory(iid);
       emitEvent("history_loaded", "end", { interaccionId: iid, messageCount: history.length, maxMessages: config.HISTORY_MAX_MESSAGES, messages: history.map(function (m) { return { role: m.role, content: m.content || "" }; }) });
 
       var messages = [{ role: "system", content: augmentedPrompt }];
@@ -325,7 +328,7 @@ router.post("/chat/stream", async function (req, res, next) {
         console.log("[RAG] Guardrail triggered (leak): " + leakCheck.details);
         emitEvent("ollama_retry", "start", { reason: "solution_leak", retryCount: 1 });
 
-        var strongerPrompt = augmentedPrompt + getStrongerInstruction();
+        var strongerPrompt = augmentedPrompt + getStrongerInstruction(lang);
         var retryMessages = [{ role: "system", content: strongerPrompt }];
         for (let i = 0; i < history.length; i++) {
           retryMessages.push(history[i]);
@@ -342,7 +345,7 @@ router.post("/chat/stream", async function (req, res, next) {
         console.log("[RAG] Guardrail triggered (false confirm): " + confirmCheck.details);
         emitEvent("ollama_retry", "start", { reason: "false_confirmation", retryCount: 1 });
 
-        var confirmPrompt = augmentedPrompt + getFalseConfirmationInstruction();
+        var confirmPrompt = augmentedPrompt + getFalseConfirmationInstruction(lang);
         var confirmRetry = [{ role: "system", content: confirmPrompt }];
         for (let i = 0; i < history.length; i++) {
           confirmRetry.push(history[i]);
@@ -359,7 +362,7 @@ router.post("/chat/stream", async function (req, res, next) {
         console.log("[RAG] Guardrail triggered (state reveal): " + stateCheck.details);
         emitEvent("ollama_retry", "start", { reason: "state_reveal", retryCount: 1 });
 
-        var statePrompt = augmentedPrompt + getStateRevealInstruction();
+        var statePrompt = augmentedPrompt + getStateRevealInstruction(lang);
         var stateRetry = [{ role: "system", content: statePrompt }];
         for (let i = 0; i < history.length; i++) {
           stateRetry.push(history[i]);

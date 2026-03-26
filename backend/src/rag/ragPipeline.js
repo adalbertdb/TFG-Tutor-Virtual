@@ -6,6 +6,7 @@ const { hybridSearch } = require("./hybridSearch");
 const { searchKG } = require("./knowledgeGraph");
 const { emitEvent } = require("./ragEventBus");
 const Resultado = require("../models/resultado");
+const { getAllPatterns, conceptKeywords: conceptDict, normalizeToSpanish } = require("../utils/languageManager");
 
 // Format dataset examples as context for the LLM
 function formatExamples(results) {
@@ -213,35 +214,28 @@ async function loadStudentHistory(userId) {
 }
 
 // CRAG: extract key entities from the user message for query reformulation
+// Uses multi-language concept keywords and normalizes to Spanish for dataset retrieval
 function extractKeyEntities(userMessage) {
   const resistances = extractResistances(userMessage);
   const lower = userMessage.toLowerCase();
 
-  // Collect important terms: resistances + concept keywords found
+  // Collect important terms: resistances + concept keywords found (all languages)
   const parts = [];
   for (let i = 0; i < resistances.length; i++) {
     parts.push(resistances[i]);
   }
 
-  const conceptKeywords = [
-    "divisor de tensión", "divisor de corriente",
-    "serie", "paralelo",
-    "corriente", "tensión", "resistencia",
-    "cortocircuito", "cortocircuitada", "cortocircuitado", "corto",
-    "circuito abierto", "abierto", "abierta",
-    "se consume", "se gasta", "atenuación",
-    "interruptor cerrado", "interruptor abierto",
-  ];
-  for (let i = 0; i < conceptKeywords.length; i++) {
-    if (lower.includes(conceptKeywords[i])) {
-      parts.push(conceptKeywords[i]);
+  const allConcepts = getAllPatterns(conceptDict);
+  for (let i = 0; i < allConcepts.length; i++) {
+    if (lower.includes(allConcepts[i])) {
+      parts.push(allConcepts[i]);
     }
   }
 
   if (parts.length === 0) {
-    return userMessage;
+    return normalizeToSpanish(userMessage);
   }
-  return parts.join(" ");
+  return normalizeToSpanish(parts.join(" "));
 }
 
 // Main pipeline: classifies, retrieves, evaluates quality, and builds augmentation
