@@ -259,19 +259,20 @@ router.post("/chat/stream", async (req, res) => {
   });
 
   let finalized = false;
-  const finalizeOnce = async ({ interaccionId, fullAssistant, reason }) => {
+  const finalizeOnce = async ({ interaccionId, fullAssistant, reason, metadata }) => {
     if (finalized) return;
     finalized = true;
 
     clearInterval(hb);
 
     try {
-      // Guardar asistente solo si hay contenido (evita meter "" si el stream falló pronto)
       if (typeof fullAssistant === "string" && fullAssistant.trim() !== "") {
+        var msg = { role: "assistant", content: fullAssistant };
+        if (metadata) msg.metadata = metadata;
         await Interaccion.updateOne(
           { _id: interaccionId },
           {
-            $push: { conversacion: { role: "assistant", content: fullAssistant } },
+            $push: { conversacion: msg },
             $set: { fin: new Date() },
           }
         );
@@ -380,18 +381,20 @@ router.post("/chat/stream", async (req, res) => {
     const lang = resolveLanguage(history);
 
     if (correctNow) {
-      // Mensaje corto y token EXACTO al final (sin espacios extra)
       const assistant = `${getFinishMessages(lang).exactAnswer}${FIN_TOKEN}`;
-
-      // Enviamos al cliente como stream "normal"
       sseSend(res, { chunk: assistant });
 
-      // Guardamos y cerramos
       clearTimeout(maxTimer);
       await finalizeOnce({
         interaccionId: iid,
         fullAssistant: assistant,
         reason: "deterministic_finish",
+        metadata: {
+          classification: "exact_match",
+          decision: "deterministic_finish",
+          isCorrectAnswer: true,
+          timing: { totalMs: nowMs() - t0 },
+        },
       });
       return;
     }
@@ -410,6 +413,7 @@ router.post("/chat/stream", async (req, res) => {
     dumpToFile(reqId, "messages_json", JSON.stringify(messages, null, 2));
 
     // Llamada a Ollama stream (NDJSON)
+    const ollamaStartMs = nowMs();
     const ollamaResp = await axios.post(
       `${baseUrl}/api/chat`,
       {
@@ -439,7 +443,18 @@ router.post("/chat/stream", async (req, res) => {
     const endStream = async (reason) => {
       clearTimeout(maxTimer);
       if (aborted) return;
-      await finalizeOnce({ interaccionId: iid, fullAssistant, reason });
+      await finalizeOnce({
+        interaccionId: iid,
+        fullAssistant,
+        reason,
+        metadata: {
+          decision: "no_rag_stream",
+          timing: {
+            ollamaMs: nowMs() - ollamaStartMs,
+            totalMs: nowMs() - t0,
+          },
+        },
+      });
     };
 
     ollamaResp.data.on("data", (chunk) => {

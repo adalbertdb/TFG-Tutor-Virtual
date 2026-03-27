@@ -81,6 +81,7 @@ export default function Login() {
             </span>
           </button>
 
+          {/* Demo login — disabled for production
           <div style={{ borderTop: "1px solid #e5e7eb", marginTop: "1rem", paddingTop: "1rem", textAlign: "center" }}>
             <p style={{ fontSize: "0.85rem", color: "#6b7280", marginBottom: "0.5rem" }}>
               Modo desarrollo local
@@ -105,6 +106,7 @@ export default function Login() {
               <p style={{ color: "#ef4444", fontSize: "0.8rem", marginTop: "0.5rem" }}>{demoError}</p>
             )}
           </div>
+          */}
 
           <div className="tv-login__foot">
             Acceso exclusivo mediante CAS. Si tienes sesión iniciada en el

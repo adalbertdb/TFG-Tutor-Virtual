@@ -22,6 +22,7 @@ const ragMiddleware = require("./rag/ragMiddleware");
 const { setupWorkflowSocket } = require("./rag/workflowSocket");
 const resultadoRoutes = require("./routes/resultados");
 const progresoRoutes = require("./routes/progresoRoutes");
+const exportRoutes = require("./routes/exportRoutes");
 
 // Auth (CAS + demo)
 const { router: authRouter, requireAuth } = require("./authRoutes");
@@ -107,6 +108,7 @@ app.use("/api/ollama", ragMiddleware);
 app.use("/api/ollama", ollamaChatRoutes);
 app.use("/api/progreso", progresoRoutes);
 app.use("/api/resultados", resultadoRoutes);
+app.use("/api/export", exportRoutes);
 
 app.post("/api/llm/query", requireAuth, (req, res) => {
   res.json({ ok: true, user: req.session.user });

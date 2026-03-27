@@ -246,11 +246,20 @@ router.post("/chat/stream", async function (req, res, next) {
         sseSend(res, { interaccionId: iid });
       }
 
-      // 6. Save user message
+      // 6. Save user message (with student response time if there is a previous assistant message)
       var text = userMessage.trim();
+      var studentResponseMs = null;
+      var lastDoc = await Interaccion.findById(iid).select({ conversacion: { $slice: -1 } }).lean();
+      if (lastDoc && lastDoc.conversacion && lastDoc.conversacion.length > 0) {
+        var lastMsg = lastDoc.conversacion[lastDoc.conversacion.length - 1];
+        if (lastMsg.role === "assistant" && lastMsg.timestamp) {
+          studentResponseMs = Date.now() - new Date(lastMsg.timestamp).getTime();
+        }
+      }
+      var userMetadata = studentResponseMs != null ? { metadata: { studentResponseMs: studentResponseMs } } : {};
       await Interaccion.updateOne(
         { _id: iid },
-        { $push: { conversacion: { role: "user", content: text } }, $set: { fin: new Date() } }
+        { $push: { conversacion: Object.assign({ role: "user", content: text }, userMetadata) }, $set: { fin: new Date() } }
       );
 
       // 7. Deterministic finish: correct answer → check if we can finish directly
@@ -272,7 +281,12 @@ router.post("/chat/stream", async function (req, res, next) {
 
           await Interaccion.updateOne(
             { _id: iid },
-            { $push: { conversacion: { role: "assistant", content: finishMsg } }, $set: { fin: new Date() } }
+            { $push: { conversacion: { role: "assistant", content: finishMsg, metadata: {
+              classification: ragResult.classification,
+              decision: "deterministic_finish",
+              isCorrectAnswer: true,
+              timing: { pipelineMs: pipelineTime, totalMs: Date.now() - startTime },
+            } } }, $set: { fin: new Date() } }
           );
 
           emitEvent("mongodb_save", "end", { interaccionId: iid, messagesAdded: 2 });
@@ -391,10 +405,29 @@ router.post("/chat/stream", async function (req, res, next) {
       sseSend(res, { chunk: fullResponse });
       emitEvent("response_sent", "end", { responseLength: fullResponse.length, responsePreview: fullResponse, containsFIN: fullResponse.includes(FIN_TOKEN), guardrailTriggered: guardrailTriggered });
 
-      // 13. Save assistant response to MongoDB
+      // 13. Save assistant response to MongoDB with detailed metadata
+      var ollamaMs = Date.now() - ollamaStart;
+      var totalMs = Date.now() - startTime;
+      var assistantMetadata = {
+        classification: ragResult.classification,
+        decision: ragResult.decision,
+        guardrails: {
+          solutionLeak: leakCheck.leaked,
+          falseConfirmation: confirmCheck.confirmed,
+          prematureConfirmation: prematureCheck.premature,
+          stateReveal: stateCheck.revealed,
+        },
+        timing: {
+          pipelineMs: pipelineTime,
+          ollamaMs: ollamaMs,
+          totalMs: totalMs,
+        },
+        sourcesCount: (ragResult.sources || []).length,
+        isCorrectAnswer: isCorrect || false,
+      };
       await Interaccion.updateOne(
         { _id: iid },
-        { $push: { conversacion: { role: "assistant", content: fullResponse } }, $set: { fin: new Date() } }
+        { $push: { conversacion: { role: "assistant", content: fullResponse, metadata: assistantMetadata } }, $set: { fin: new Date() } }
       );
       emitEvent("mongodb_save", "end", { interaccionId: iid, messagesAdded: 2 });
 
