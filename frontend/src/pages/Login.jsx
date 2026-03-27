@@ -32,9 +32,9 @@ export default function Login() {
     setLoading(true);
     localStorage.removeItem("tv_demo_enabled");
 
-    const returnTo = encodeURIComponent(window.location.origin + from);
-    window.location.href =
-      "https://tutor-virtual.dsic.upv.es/api/auth/cas/login?returnTo=" + returnTo;
+    const basePath = import.meta.env.VITE_BASE_PATH || "";
+    const returnTo = encodeURIComponent(window.location.origin + basePath + from);
+    window.location.href = basePath + "/api/auth/cas/login?returnTo=" + returnTo;
   }, [from]);
 
   return (

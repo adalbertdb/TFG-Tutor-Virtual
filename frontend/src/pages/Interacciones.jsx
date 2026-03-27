@@ -69,8 +69,9 @@ async function enviarMensajeStream({
   onDone,
   onError,
 }) {
+  const basePath = import.meta.env.VITE_BASE_PATH || "";
   try {
-    const resp = await fetch("/api/ollama/chat/stream", {
+    const resp = await fetch(basePath + "/api/ollama/chat/stream", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -771,7 +772,8 @@ export default function Interacciones() {
     );
   }
 
-  const imgSrc = ejercicioActual.imagen ? `/static/${ejercicioActual.imagen}` : "/placeholder-ejercicio.png";
+  const basePath = import.meta.env.VITE_BASE_PATH || "";
+  const imgSrc = ejercicioActual.imagen ? `${basePath}/static/${ejercicioActual.imagen}` : `${basePath}/placeholder-ejercicio.png`;
 
   return (
     <div className="interacciones-scope">

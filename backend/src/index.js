@@ -41,7 +41,9 @@ app.use(
     origin: [
       process.env.FRONTEND_BASE_URL || "http://localhost:5173",
       process.env.WORKFLOW_BASE_URL || "http://localhost:5174",
-    ],
+    ].map((u) => {
+      try { return new URL(u).origin; } catch { return u; }
+    }),
     credentials: true,
   })
 );
@@ -80,6 +82,7 @@ mongoose
 // ====== Sesión ======
 app.use(
   session({
+    name: "sid_irene",
     secret: process.env.SESSION_SECRET,
     resave: false,
     saveUninitialized: false,

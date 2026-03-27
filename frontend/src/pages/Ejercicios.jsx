@@ -437,7 +437,7 @@ export default function EjerciciosPage() {
                           <div className="ej-panel-media">
                             {ejercicio.imagen && (
                               <img
-                                src={`/static/${ejercicio.imagen}`}
+                                src={`${import.meta.env.VITE_BASE_PATH || ""}/static/${ejercicio.imagen}`}
                                 alt={ejercicio.titulo}
                                 className="ej-panel-img"
                               />
