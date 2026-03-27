@@ -164,6 +164,27 @@ async function callOllama(messages) {
   return (response.data.message && response.data.message.content) || "";
 }
 
+// Count how many previous turns had a "correct" classification (for loop detection)
+// Prevents the tutor from endlessly asking for better reasoning when the student has the right answer
+async function countPreviousCorrectTurns(interaccionId) {
+  var doc = await Interaccion.findById(interaccionId).select({ conversacion: 1 }).lean();
+  if (!doc || !Array.isArray(doc.conversacion)) return 0;
+  var count = 0;
+  var correctTypes = ["correct_no_reasoning", "correct_wrong_reasoning", "correct_good_reasoning", "partial_correct"];
+  for (var i = 0; i < doc.conversacion.length; i++) {
+    var msg = doc.conversacion[i];
+    if (msg.role === "assistant" && msg.metadata && msg.metadata.classification) {
+      for (var j = 0; j < correctTypes.length; j++) {
+        if (msg.metadata.classification === correctTypes[j]) {
+          count++;
+          break;
+        }
+      }
+    }
+  }
+  return count;
+}
+
 // Load last N messages from conversation history
 async function loadHistory(interaccionId) {
   const doc = await Interaccion.findById(interaccionId)
@@ -309,6 +330,16 @@ router.post("/chat/stream", async function (req, res, next) {
       var isCorrect = ragResult.classification === "correct_good_reasoning"
         || ragResult.classification === "correct_no_reasoning"
         || ragResult.classification === "correct_wrong_reasoning";
+
+      // 7a. Loop detection: if the student has given correct/partial answers before, don't keep looping
+      if (isCorrect && ragResult.classification !== "correct_good_reasoning") {
+        var prevCorrectCount = await countPreviousCorrectTurns(iid);
+        if (prevCorrectCount >= 2) {
+          console.log("[RAG] Loop detection: " + prevCorrectCount + " previous correct turns, overriding " + ragResult.classification + " → correct_good_reasoning");
+          ragResult.classification = "correct_good_reasoning";
+          isCorrect = true;
+        }
+      }
 
       if (isCorrect) {
         // Load history to check if the student has already been reasoning
@@ -462,23 +493,29 @@ router.post("/chat/stream", async function (req, res, next) {
       }
 
       // 11e. Deterministic prefix fallback: if after all retries the response STILL
-      // starts with a confirmation phrase for a wrong/partial answer, force a prefix
-      var finalConfirmCheck = checkFalseConfirmation(fullResponse, ragResult.classification);
-      if (finalConfirmCheck.confirmed) {
-        var prefix = getRandomIntermediatePhrase("wrong", lang);
-        if (prefix) {
-          console.log("[RAG] Deterministic prefix forced: " + prefix);
-          fullResponse = prefix + " " + removeOpeningConfirmation(fullResponse, lang);
-          guardrailTriggered = true;
+      // starts with a confirmation phrase for a wrong/partial answer, force a prefix.
+      // ONLY apply when the student mentioned specific elements (they're answering the question).
+      // When no elements are mentioned, the student is responding to a Socratic question about concepts —
+      // the LLM confirming a correct concept is fine and forcing a negative prefix creates contradictions.
+      var studentMentionedElements = ragResult.mentionedElements && ragResult.mentionedElements.length > 0;
+      if (studentMentionedElements) {
+        var finalConfirmCheck = checkFalseConfirmation(fullResponse, ragResult.classification);
+        if (finalConfirmCheck.confirmed) {
+          var prefix = getRandomIntermediatePhrase("wrong", lang);
+          if (prefix) {
+            console.log("[RAG] Deterministic prefix forced: " + prefix);
+            fullResponse = prefix + " " + removeOpeningConfirmation(fullResponse, lang);
+            guardrailTriggered = true;
+          }
         }
-      }
-      var finalPrematureCheck = checkPrematureConfirmation(fullResponse, ragResult.classification);
-      if (finalPrematureCheck.premature) {
-        var partialPrefix = getRandomIntermediatePhrase("partial", lang);
-        if (partialPrefix) {
-          console.log("[RAG] Deterministic prefix forced (partial): " + partialPrefix);
-          fullResponse = partialPrefix + " " + removeOpeningConfirmation(fullResponse, lang);
-          guardrailTriggered = true;
+        var finalPrematureCheck = checkPrematureConfirmation(fullResponse, ragResult.classification);
+        if (finalPrematureCheck.premature) {
+          var partialPrefix = getRandomIntermediatePhrase("partial", lang);
+          if (partialPrefix) {
+            console.log("[RAG] Deterministic prefix forced (partial): " + partialPrefix);
+            fullResponse = partialPrefix + " " + removeOpeningConfirmation(fullResponse, lang);
+            guardrailTriggered = true;
+          }
         }
       }
 

@@ -133,9 +133,15 @@ function detectNegation(message, position, elementLength) {
   }
 
   // Check post-negation: look for negation phrases after the element
+  // Truncate at sentence boundary to avoid cross-sentence false positives
+  // e.g. "R2 y R4. No pasa por R3" — the "no pasa" is about R3, not R2/R4
   var postStart = position + elementLength;
   var postEnd = Math.min(lower.length, postStart + POST_WINDOW);
   var suffix = lower.substring(postStart, postEnd);
+  var sentBoundary = suffix.search(/[.!?]/);
+  if (sentBoundary >= 0) {
+    suffix = suffix.substring(0, sentBoundary);
+  }
 
   for (var i = 0; i < postNegationPhrases.length; i++) {
     if (suffix.includes(postNegationPhrases[i])) {
@@ -322,13 +328,10 @@ function classifyQuery(userMessage, correctAnswer, evaluableElements) {
 
   // 4. Check if PROPOSED elements match correct answer (ignoring negated ones)
   if (sameSet(proposed, correctAnswer)) {
-    // Correct answer but no reasoning
-    if (!reasoning) {
-      return { type: types.correctNoReasoning, resistances: allMentioned, proposed: proposed, negated: negated, hasReasoning: reasoning, concepts: concepts };
-    }
-    // Correct answer with concepts — check if negations are also correct
+    // Correct answer with concepts — check BEFORE reasoning, since concepts ARE implicit reasoning
+    // (student referencing "serie", "paralelo", "divisor de tensión" = they're trying to reason)
     // If student correctly negates elements AND uses concept keywords, the concepts are likely correct
-    // (e.g. "R1, R2 y R4 porque R3 está en abierto y R5 cortocircuitada" → correct usage of "abierto"/"cortocircuitada")
+    // (e.g. "R1, R2 y R4 porque R3 está en abierto y R5 cortocircuitada" → correct usage)
     if (concepts.length > 0) {
       if (negated.length > 0) {
         var allNegCorrect = true;
@@ -349,7 +352,11 @@ function classifyQuery(userMessage, correctAnswer, evaluableElements) {
       // Concepts without correct negations → potentially wrong reasoning
       return { type: types.correctWrongReasoning, resistances: allMentioned, proposed: proposed, negated: negated, hasReasoning: reasoning, concepts: concepts };
     }
-    // Correct answer with good reasoning
+    // Correct answer but no reasoning and no concepts
+    if (!reasoning) {
+      return { type: types.correctNoReasoning, resistances: allMentioned, proposed: proposed, negated: negated, hasReasoning: reasoning, concepts: concepts };
+    }
+    // Correct answer with good reasoning (no wrong concepts)
     return { type: types.correctGoodReasoning, resistances: allMentioned, proposed: proposed, negated: negated, hasReasoning: reasoning, concepts: concepts };
   }
 

@@ -318,6 +318,9 @@ async function runPipeline(userMessage, exerciseNum, correctAnswer, userId, eval
     decision: "no_rag",
     sources: [],
     classification: classification.type,
+    mentionedElements: classification.resistances,  // all elements the student mentioned
+    proposed: classification.proposed,               // elements proposed (not negated)
+    negated: classification.negated,                 // elements the student rejected
   };
 
   // Step B: Route to appropriate retrieval strategy

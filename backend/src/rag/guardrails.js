@@ -308,16 +308,39 @@ function checkElementNaming(response, evaluableElements) {
   return { named: false, details: "" };
 }
 
-// Utility: remove the opening confirmation phrase from a response
+// Utility: remove opening confirmation phrases from a response
 // Used when the guardrail retry still produces a confirmation — we strip it and prepend a deterministic prefix
+// Iteratively strips all confirmation phrases from the start to avoid contradictions like:
+// "Hmm, no estoy seguro. Exacto, en un cortocircuito..." → "Hmm, no estoy seguro. En un cortocircuito..."
 function removeOpeningConfirmation(response, lang) {
-  // Try to remove the first sentence if it's short (likely just a confirmation phrase)
-  var firstSentenceEnd = response.search(/[.!?]\s/);
-  if (firstSentenceEnd > 0 && firstSentenceEnd < 60) {
-    return response.substring(firstSentenceEnd + 1).trim();
+  var result = response.trim();
+  var changed = true;
+
+  // Iteratively strip confirmation phrases from the beginning
+  while (changed) {
+    changed = false;
+    // Strip leading punctuation (¡, ¿, !, spaces) before matching
+    var stripped = result.replace(/^[¡¿!\s]+/, "");
+    var lowerResult = stripAccents(stripped.toLowerCase());
+
+    for (var i = 0; i < confirmPhrases.length; i++) {
+      var phraseLower = stripAccents(confirmPhrases[i]);
+      if (lowerResult.startsWith(phraseLower)) {
+        // Strip the phrase and any following punctuation/whitespace
+        var afterPhrase = stripped.substring(confirmPhrases[i].length).replace(/^[,;:!.\s¡¿]+/, "");
+        result = afterPhrase;
+        changed = true;
+        break;
+      }
+    }
   }
-  // If no short first sentence, just return as is
-  return response;
+
+  // If we stripped something, capitalize the first letter of remaining text
+  if (result !== response.trim() && result.length > 0) {
+    result = result.charAt(0).toUpperCase() + result.substring(1);
+  }
+
+  return result || response;
 }
 
 module.exports = {
