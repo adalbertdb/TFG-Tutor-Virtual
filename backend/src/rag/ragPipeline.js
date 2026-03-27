@@ -6,7 +6,7 @@ const { hybridSearch } = require("./hybridSearch");
 const { searchKG } = require("./knowledgeGraph");
 const { emitEvent } = require("./ragEventBus");
 const Resultado = require("../models/resultado");
-const { getAllPatterns, conceptKeywords: conceptDict, normalizeToSpanish } = require("../utils/languageManager");
+const { getAllPatterns, conceptKeywords: conceptDict, normalizeToSpanish, getIntermediateFeedback } = require("../utils/languageManager");
 
 // Format dataset examples as context for the LLM
 function formatExamples(results) {
@@ -78,89 +78,142 @@ Socratic questions: "¿Qué ocurre con la corriente cuando un componente está c
   return text;
 }
 
-// Analyze each resistance the student mentioned: which are correct, which are wrong
-function analyzeStudentResistances(resistances, correctAnswer) {
-  if (resistances.length === 0) {
+// Analyze each element the student mentioned: which are proposed, which are negated, which are correct/wrong
+// Generic: works with any evaluable elements (resistances, concepts, definitions, etc.)
+function analyzeStudentElements(classification, correctAnswer) {
+  var proposed = classification.proposed || [];
+  var negated = classification.negated || [];
+
+  if (proposed.length === 0 && negated.length === 0) {
     return "";
   }
 
-  const correctSet = {};
-  for (let i = 0; i < correctAnswer.length; i++) {
+  var correctSet = {};
+  for (var i = 0; i < correctAnswer.length; i++) {
     correctSet[correctAnswer[i]] = true;
   }
 
-  const correctOnes = [];
-  const wrongOnes = [];
-  for (let i = 0; i < resistances.length; i++) {
-    if (correctSet[resistances[i]]) {
-      correctOnes.push(resistances[i]);
+  // Analyze proposed elements
+  var correctProposals = [];
+  var wrongProposals = [];
+  for (var i = 0; i < proposed.length; i++) {
+    if (correctSet[proposed[i]]) {
+      correctProposals.push(proposed[i]);
     } else {
-      wrongOnes.push(resistances[i]);
+      wrongProposals.push(proposed[i]);
     }
   }
 
-  // Also find correct resistances the student missed
-  const mentionedSet = {};
-  for (let i = 0; i < resistances.length; i++) {
-    mentionedSet[resistances[i]] = true;
+  // Analyze negated elements
+  var correctNegations = [];  // student rejects something NOT in the answer (correct rejection)
+  var wrongNegations = [];    // student rejects something IN the answer (wrong rejection)
+  for (var i = 0; i < negated.length; i++) {
+    if (correctSet[negated[i]]) {
+      wrongNegations.push(negated[i]);
+    } else {
+      correctNegations.push(negated[i]);
+    }
   }
-  const missed = [];
-  for (let i = 0; i < correctAnswer.length; i++) {
-    if (!mentionedSet[correctAnswer[i]]) {
+
+  // Find missing elements (in correct answer, not proposed, not negated)
+  var allMentioned = {};
+  for (var i = 0; i < proposed.length; i++) allMentioned[proposed[i]] = true;
+  for (var i = 0; i < negated.length; i++) allMentioned[negated[i]] = true;
+  var missed = [];
+  for (var i = 0; i < correctAnswer.length; i++) {
+    if (!allMentioned[correctAnswer[i]]) {
       missed.push(correctAnswer[i]);
     }
   }
 
-  let text = "[PER-RESISTANCE ANALYSIS] (internal, NEVER reveal to student)\n";
-  text = text + "The student mentioned: " + resistances.join(", ") + ".\n";
+  var text = "[PER-ELEMENT ANALYSIS] (internal, NEVER reveal to student)\n";
 
-  if (correctOnes.length > 0) {
-    text = text + "- CORRECT: " + correctOnes.join(", ") + " ARE in the correct answer.\n";
+  if (proposed.length > 0) {
+    text += "The student PROPOSES: " + proposed.join(", ") + ".\n";
   }
-  if (wrongOnes.length > 0) {
-    text = text + "- WRONG: " + wrongOnes.join(", ") + " are NOT in the correct answer.\n";
+  if (negated.length > 0) {
+    text += "The student REJECTS: " + negated.join(", ") + ".\n";
+  }
+
+  if (correctProposals.length > 0) {
+    text += "- CORRECT PROPOSALS: " + correctProposals.join(", ") + " ARE in the correct answer.\n";
+  }
+  if (wrongProposals.length > 0) {
+    text += "- WRONG PROPOSALS: " + wrongProposals.join(", ") + " are NOT in the correct answer.\n";
+  }
+  if (wrongNegations.length > 0) {
+    text += "- WRONG REJECTION: The student REJECTS " + wrongNegations.join(", ") + ", but " + wrongNegations.join(", ") + " IS/ARE in the correct answer.\n";
+    text += "  → Do NOT agree that " + wrongNegations.join(", ") + " should be excluded. The student is WRONG about this.\n";
+  }
+  if (correctNegations.length > 0) {
+    text += "- CORRECT REJECTION: The student correctly rejects " + correctNegations.join(", ") + " (not in the correct answer).\n";
   }
   if (missed.length > 0) {
-    text = text + "- MISSING: The student has not mentioned " + missed.join(", ") + " which ARE in the correct answer.\n";
+    text += "- MISSING: The student has not mentioned " + missed.join(", ") + " which ARE in the correct answer.\n";
   }
 
-  text = text + "CRITICAL: Evaluate EACH resistance independently. If the student says multiple resistances, some may be correct and others wrong. ";
-  text = text + "Do NOT confirm or deny them as a group. ";
-  text = text + "If the student says something correct about one resistance, acknowledge it. ";
-  text = text + "If the student says something wrong about another, guide them to reconsider THAT specific one.\n\n";
+  text += "CRITICAL: Evaluate EACH element independently. ";
+  text += "When the student says an element 'does not contribute/apply/matter' but it IS in the correct answer, you MUST NOT agree. ";
+  text += "Guide them to reconsider with a Socratic question about CONCEPTS, not about the element directly.\n\n";
   return text;
 }
 
 // Format classification hint for the LLM
-function formatClassificationHint(classification, correctAnswer) {
-  const hints = {
-    dont_know: "The student does not know where to start. Ask ONE question about a fundamental concept (e.g., 'What conditions does a resistance need for current to flow through it?'). Do NOT mention specific resistances.",
+// lang parameter enables intermediate feedback phrases in the correct language
+function formatClassificationHint(classification, correctAnswer, lang) {
+  lang = lang || "es";
+
+  var hints = {
+    dont_know: "The student does not know where to start. Ask ONE question about a fundamental concept (e.g., 'What conditions does a component need for current to flow through it?'). Do NOT mention specific elements.",
     single_word: "The student gave an answer without reasoning. Ask them to explain WHY they think that. Do not move forward until they reason.",
-    wrong_answer: "The student gave incorrect resistances. Ask them to explain their reasoning. If you detect an alternative conception (AC), focus on challenging THAT concept with a Socratic question. Do NOT mention specific resistances or reveal states.",
-    correct_no_reasoning: "The student got the right answer but has not explained why. Ask them to justify their answer using circuit concepts. Do NOT accept the answer as correct until they reason. Do NOT use phrases like 'Perfect', 'Correct', 'Very good', 'Exactly'. Indicate they are on the right track but you need them to explain their reasoning.",
-    correct_wrong_reasoning: "The student got the right answer but uses a wrong concept. Focus on correcting the alternative conception with a Socratic question about the concept, NOT about the resistances. Do NOT use phrases like 'Perfect', 'Correct', 'Very good', 'Exactly'. Acknowledge they are on the right track but challenge the wrong reasoning.",
+    wrong_answer: "The student gave an incorrect answer. Ask them to explain their reasoning. If you detect an alternative conception (AC), focus on challenging THAT concept with a Socratic question. Do NOT mention specific elements or reveal states.",
+    correct_no_reasoning: "The student got the right answer but has not explained why. Ask them to justify their answer using concepts. Do NOT accept the answer as correct until they reason. Do NOT use phrases like 'Perfect', 'Correct', 'Very good', 'Exactly'. Indicate they are on the right track but you need them to explain their reasoning.",
+    correct_wrong_reasoning: "The student got the right answer but uses a wrong concept. Focus on correcting the alternative conception with a Socratic question about the concept, NOT about specific elements. Do NOT use phrases like 'Perfect', 'Correct', 'Very good', 'Exactly'. Acknowledge they are on the right track but challenge the wrong reasoning.",
     correct_good_reasoning: "The student got the right answer with good reasoning. Confirm briefly and finish.",
-    wrong_concept: "The student shows an alternative conception. Focus ONLY on challenging that wrong concept with a Socratic question. Do NOT guide towards specific resistances.",
+    wrong_concept: "The student shows an alternative conception. Focus ONLY on challenging that wrong concept with a Socratic question. Do NOT guide towards specific elements.",
   };
 
-  const hint = hints[classification.type];
+  var hint = hints[classification.type];
   if (hint == null) {
     return "";
   }
 
-  let text = "[RESPONSE MODE]\n";
-  text = text + "The student's message has been classified as: " + classification.type + ".\n";
-  text = text + hint + "\n";
+  var text = "[RESPONSE MODE]\n";
+  text += "The student's message has been classified as: " + classification.type + ".\n";
+  text += hint + "\n";
 
   if (classification.concepts.length > 0) {
-    text = text + "The student mentions: " + classification.concepts.join(", ") + ".\n";
+    text += "The student mentions: " + classification.concepts.join(", ") + ".\n";
   }
 
-  text = text + "Follow the reference examples below to guide your response style.\n\n";
+  // Inject intermediate feedback phrases for wrong/partial classifications (hybrid approach)
+  if (classification.type === "wrong_answer" || classification.type === "wrong_concept") {
+    var wrongPhrases = getIntermediateFeedback("wrong", lang);
+    if (wrongPhrases.length > 0) {
+      text += "\nSTART your response with one of these phrases (choose the most appropriate):\n";
+      for (var i = 0; i < wrongPhrases.length; i++) {
+        text += '- "' + wrongPhrases[i] + '"\n';
+      }
+      text += "NEVER start with 'Perfecto', 'Correcto', 'Interesante', 'Muy bien' or similar positive confirmation.\n";
+    }
+  }
 
-  // Add per-resistance analysis when the student mentions specific resistances
-  if (classification.resistances.length > 0 && correctAnswer != null) {
-    text = text + analyzeStudentResistances(classification.resistances, correctAnswer);
+  if (classification.type === "correct_no_reasoning" || classification.type === "correct_wrong_reasoning") {
+    var partialPhrases = getIntermediateFeedback("partial", lang);
+    if (partialPhrases.length > 0) {
+      text += "\nSTART your response with one of these phrases (choose the most appropriate):\n";
+      for (var i = 0; i < partialPhrases.length; i++) {
+        text += '- "' + partialPhrases[i] + '"\n';
+      }
+      text += "Do NOT say 'Perfecto' or 'Correcto' until reasoning is validated.\n";
+    }
+  }
+
+  text += "\nFollow the reference examples below to guide your response style.\n\n";
+
+  // Add per-element analysis when the student mentions specific elements (with negation awareness)
+  if ((classification.resistances.length > 0 || (classification.negated && classification.negated.length > 0)) && correctAnswer != null) {
+    text += analyzeStudentElements(classification, correctAnswer);
   }
 
   return text;
@@ -239,14 +292,19 @@ function extractKeyEntities(userMessage) {
 }
 
 // Main pipeline: classifies, retrieves, evaluates quality, and builds augmentation
-async function runPipeline(userMessage, exerciseNum, correctAnswer, userId) {
-  // Step A: Classify the query
+// evaluableElements: optional array of all possible answer elements for generic extraction
+// lang: language for intermediate feedback phrases
+async function runPipeline(userMessage, exerciseNum, correctAnswer, userId, evaluableElements, lang) {
+  // Step A: Classify the query (now with generic element extraction + negation detection)
   emitEvent("classify_start", "start", { userMessage: userMessage, correctAnswer: correctAnswer, messageLength: userMessage.length });
-  const classification = classifyQuery(userMessage, correctAnswer);
-  var isCorrectAnswer = classification.resistances.length > 0 && classification.resistances.slice().sort().join(",") === correctAnswer.slice().sort().join(",");
+  var classification = classifyQuery(userMessage, correctAnswer, evaluableElements);
+  // Use PROPOSED elements (not negated) to determine if the student gave the correct answer
+  var isCorrectAnswer = classification.proposed.length > 0 && classification.proposed.slice().sort().join(",") === correctAnswer.slice().sort().join(",");
   emitEvent("classify_end", "end", {
     type: classification.type,
     resistances: classification.resistances,
+    proposed: classification.proposed,
+    negated: classification.negated,
     hasReasoning: classification.hasReasoning,
     concepts: classification.concepts,
     isCorrectAnswer: isCorrectAnswer,
@@ -274,7 +332,7 @@ async function runPipeline(userMessage, exerciseNum, correctAnswer, userId) {
     const kgResults = searchKG(["serie", "paralelo", "cortocircuito"]);
     const limited = kgResults.slice(0, 3);
     emitEvent("kg_search_end", "end", { resultCount: limited.length, entries: limited.map(function(e) { return { node1: e.node1, relation: e.relation, node2: e.node2, acName: e.acName || null, acDescription: e.acDescription || null, expertReasoning: e.expertReasoning || "", socraticQuestions: e.socraticQuestions || "" }; }) });
-    result.augmentation = formatClassificationHint(classification, correctAnswer) + formatKGContext(limited);
+    result.augmentation = formatClassificationHint(classification, correctAnswer, lang) + formatKGContext(limited);
     result.decision = "scaffold";
     result.sources = limited;
     return result;
@@ -282,7 +340,7 @@ async function runPipeline(userMessage, exerciseNum, correctAnswer, userId) {
 
   if (classification.type === types.singleWord) {
     emitEvent("routing_decision", "end", { classification: classification.type, decision: "demand_reasoning", path: "single_word → demand_reasoning" });
-    result.augmentation = formatClassificationHint(classification, correctAnswer);
+    result.augmentation = formatClassificationHint(classification, correctAnswer, lang);
     result.decision = "demand_reasoning";
     return result;
   }
@@ -302,7 +360,7 @@ async function runPipeline(userMessage, exerciseNum, correctAnswer, userId) {
       emitEvent("hybrid_search_end", "end", { resultCount: datasetResults.length, topScore: datasetResults.length > 0 ? Math.round(datasetResults[0].score * 10000) / 10000 : 0, results: datasetResults.map(function(r, i) { return { rank: i + 1, index: r.index, score: Math.round(r.score * 10000) / 10000, student: r.student || "", tutor: r.tutor || "" }; }) });
     }
 
-    result.augmentation = formatClassificationHint(classification, correctAnswer) + formatExamples(datasetResults);
+    result.augmentation = formatClassificationHint(classification, correctAnswer, lang) + formatExamples(datasetResults);
     result.decision = "rag_examples";
     result.sources = datasetResults;
     return result;
@@ -313,7 +371,7 @@ async function runPipeline(userMessage, exerciseNum, correctAnswer, userId) {
     emitEvent("hybrid_search_start", "start", { query: userMessage, exerciseNum: exerciseNum, topK: config.TOP_K_FINAL });
     const datasetResults = await hybridSearch(userMessage, exerciseNum);
     emitEvent("hybrid_search_end", "end", { resultCount: datasetResults.length, topScore: datasetResults.length > 0 ? Math.round(datasetResults[0].score * 10000) / 10000 : 0, results: datasetResults.map(function(r, i) { return { rank: i + 1, index: r.index, score: Math.round(r.score * 10000) / 10000, student: r.student || "", tutor: r.tutor || "" }; }) });
-    result.augmentation = formatClassificationHint(classification, correctAnswer) + formatExamples(datasetResults);
+    result.augmentation = formatClassificationHint(classification, correctAnswer, lang) + formatExamples(datasetResults);
     result.decision = "demand_reasoning";
     result.sources = datasetResults;
     return result;
@@ -327,7 +385,7 @@ async function runPipeline(userMessage, exerciseNum, correctAnswer, userId) {
     emitEvent("kg_search_start", "start", { concepts: classification.concepts });
     const kgResults = searchKG(classification.concepts);
     emitEvent("kg_search_end", "end", { resultCount: kgResults.length, entries: kgResults.map(function(e) { return { node1: e.node1, relation: e.relation, node2: e.node2, acName: e.acName || null, acDescription: e.acDescription || null, expertReasoning: e.expertReasoning || "", socraticQuestions: e.socraticQuestions || "" }; }) });
-    result.augmentation = formatClassificationHint(classification, correctAnswer) + formatKGContext(kgResults) + formatExamples(datasetResults);
+    result.augmentation = formatClassificationHint(classification, correctAnswer, lang) + formatKGContext(kgResults) + formatExamples(datasetResults);
     result.decision = "correct_concept";
     result.sources = datasetResults.concat(kgResults);
     return result;
@@ -338,7 +396,7 @@ async function runPipeline(userMessage, exerciseNum, correctAnswer, userId) {
     emitEvent("hybrid_search_start", "start", { query: userMessage, exerciseNum: exerciseNum, topK: config.TOP_K_FINAL });
     const datasetResults = await hybridSearch(userMessage, exerciseNum);
     emitEvent("hybrid_search_end", "end", { resultCount: datasetResults.length, topScore: datasetResults.length > 0 ? Math.round(datasetResults[0].score * 10000) / 10000 : 0, results: datasetResults.map(function(r, i) { return { rank: i + 1, index: r.index, score: Math.round(r.score * 10000) / 10000, student: r.student || "", tutor: r.tutor || "" }; }) });
-    result.augmentation = formatClassificationHint(classification, correctAnswer) + formatExamples(datasetResults);
+    result.augmentation = formatClassificationHint(classification, correctAnswer, lang) + formatExamples(datasetResults);
     result.decision = "rag_examples";
     result.sources = datasetResults;
     return result;
@@ -352,7 +410,7 @@ async function runPipeline(userMessage, exerciseNum, correctAnswer, userId) {
     emitEvent("hybrid_search_start", "start", { query: userMessage, exerciseNum: exerciseNum, topK: config.TOP_K_FINAL });
     const datasetResults = await hybridSearch(userMessage, exerciseNum);
     emitEvent("hybrid_search_end", "end", { resultCount: datasetResults.length, topScore: datasetResults.length > 0 ? Math.round(datasetResults[0].score * 10000) / 10000 : 0, results: datasetResults.map(function(r, i) { return { rank: i + 1, index: r.index, score: Math.round(r.score * 10000) / 10000, student: r.student || "", tutor: r.tutor || "" }; }) });
-    result.augmentation = formatClassificationHint(classification, correctAnswer) + formatKGContext(kgResults) + formatExamples(datasetResults);
+    result.augmentation = formatClassificationHint(classification, correctAnswer, lang) + formatKGContext(kgResults) + formatExamples(datasetResults);
     result.decision = "concept_correction";
     result.sources = datasetResults.concat(kgResults);
     return result;
@@ -362,17 +420,19 @@ async function runPipeline(userMessage, exerciseNum, correctAnswer, userId) {
 }
 
 // Full pipeline with student history appended
-async function runFullPipeline(userMessage, exerciseNum, correctAnswer, userId) {
-  const result = await runPipeline(userMessage, exerciseNum, correctAnswer, userId);
+// evaluableElements: optional array of all possible answer elements
+// lang: language for intermediate feedback phrases
+async function runFullPipeline(userMessage, exerciseNum, correctAnswer, userId, evaluableElements, lang) {
+  var result = await runPipeline(userMessage, exerciseNum, correctAnswer, userId, evaluableElements, lang);
 
-  // If no RAG needed, skip 
+  // If no RAG needed, skip
   if (result.decision === "no_rag") {
     return result;
   }
 
   // Load student's past errors and append
   emitEvent("student_history_start", "start", { userId: userId });
-  const history = await loadStudentHistory(userId);
+  var history = await loadStudentHistory(userId);
   emitEvent("student_history_end", "end", { hasHistory: history.length > 0, historyLength: history.length, historyPreview: history });
   if (history.length > 0) {
     result.augmentation += history;
@@ -381,13 +441,14 @@ async function runFullPipeline(userMessage, exerciseNum, correctAnswer, userId) 
   // Append guardrail reminder
   result.augmentation += "[GUARDRAIL]\n";
   result.augmentation += "CRITICAL RULES FOR YOUR RESPONSE:\n";
-  result.augmentation += "1. Do NOT reveal the correct answer or list the correct resistances together.\n";
-  result.augmentation += "2. Do NOT confirm incorrect answers ('Perfect', 'Correct', 'Very good').\n";
-  result.augmentation += "3. Do NOT name specific resistances for the student to analyze ('What about R5?', 'Look at R3').\n";
-  result.augmentation += "4. Do NOT reveal resistance states (short-circuited, open), switch positions, or node connections.\n";
+  result.augmentation += "1. Do NOT reveal the correct answer or list the correct elements together.\n";
+  result.augmentation += "2. Do NOT confirm incorrect answers ('Perfect', 'Correct', 'Interesting', 'Very good'). If the student is wrong, use nuanced language like 'Not quite', 'Let's reconsider', 'There are concepts to review'.\n";
+  result.augmentation += "3. Do NOT name specific elements for the student to analyze ('What about R5?', 'Look at R3').\n";
+  result.augmentation += "4. Do NOT reveal element states (short-circuited, open), switch positions, or internal connections.\n";
   result.augmentation += "5. Ask ONE Socratic question about a CONCEPT, not about a specific component.\n";
   result.augmentation += "6. If the student shows an AC (alternative conception), focus on challenging THAT concept.\n";
   result.augmentation += "7. If the student gets the right answer but without reasoning or with wrong reasoning, do NOT confirm as complete. Acknowledge progress but ask for justification or challenge the wrong concept.\n";
+  result.augmentation += "8. If the student REJECTS an element that IS in the correct answer, do NOT agree. Guide them to reconsider.\n";
 
   emitEvent("augmentation_built", "end", { augmentationLength: result.augmentation.length, decision: result.decision, classification: result.classification, sourcesCount: result.sources.length, sections: ["hint", history.length > 0 ? "history" : null, result.sources.length > 0 ? "examples" : null, "guardrail_reminder"].filter(Boolean), augmentationPreview: result.augmentation });
 

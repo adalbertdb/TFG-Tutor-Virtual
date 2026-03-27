@@ -1,4 +1,5 @@
 // Rule-based query classifier for student messages (no LLM needed)
+// Generic: works with any evaluable elements (resistances, concepts, definitions, etc.)
 
 const {
   getAllPatterns,
@@ -7,6 +8,12 @@ const {
   reasoningPatterns: reasoningDict,
   conceptKeywords: conceptDict,
 } = require("../utils/languageManager");
+
+// Normalize accented characters for accent-insensitive matching
+// Students often skip accents when typing (e.g. "tension" instead of "tensión")
+function stripAccents(str) {
+  return str.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+}
 
 // Classification types
 const types = {
@@ -29,24 +36,148 @@ const reasoningPatterns = getAllPatterns(reasoningDict);
 // Concept keywords that may indicate wrong reasoning if used incorrectly
 const conceptKeywords = getAllPatterns(conceptDict);
 
-// Extract resistance names (R1, r2, ...) from a message -> Returns one array like ["R1", "R2", "R4"]
-function extractResistances(message) {
-  const matches = message.match(/R\d+/gi); 
-  // this regex looks for:
-  // - "R"
-  // - One or more digits (0-9)
-  // - All coincidences, not only the first one
-  // - Doesn't matter if they are in uppercase or lowercase - (r1, R1)
+// =====================
+// Negation detection (multi-language)
+// =====================
 
+// Words that BEFORE an element indicate the student is rejecting it
+const preNegationWords = [
+  // es
+  "no", "sin", "ni", "tampoco", "excepto", "salvo", "menos", "quitando", "descartando",
+  // val
+  "sense", "tampoc", "excepte", "llevat de", "menys",
+  // en
+  "not", "without", "nor", "neither", "except", "excluding",
+];
+
+// Phrases that AFTER an element indicate the student is rejecting it
+const postNegationPhrases = [
+  // es - direct rejection
+  "no contribuye", "no participa", "no afecta", "no influye", "no cuenta",
+  "no interviene", "se elimina", "se descarta", "sobra", "no importa",
+  "no tiene que ver", "es incorrecto", "es incorrecta", "está mal",
+  "no es", "no forma parte", "no es relevante",
+  // es - flow/current negation (implies element is excluded)
+  "no circula", "no pasa corriente", "no fluye", "no hay corriente",
+  "no tiene corriente", "no pasa", "no llega",
+  // val - direct rejection
+  "no contribueix", "no participa", "no afecta", "no influeix", "no compta",
+  "s'elimina", "es descarta", "no té a veure", "és incorrecte",
+  "no és", "no forma part", "no és rellevant",
+  // val - flow negation
+  "no circula", "no passa corrent", "no flueix", "no hi ha corrent",
+  // en - direct rejection
+  "doesn't contribute", "does not contribute", "doesn't affect", "does not affect",
+  "is not relevant", "isn't part", "doesn't matter", "is wrong", "is incorrect",
+  "should not", "shouldn't be", "is not", "isn't",
+  // en - flow negation
+  "no current flows", "current doesn't flow", "no current", "doesn't flow",
+];
+
+// Check if there is a negation around a specific position in the message
+// Windows are tight to avoid false positives on distant negations
+function detectNegation(message, position, elementLength) {
+  var lower = message.toLowerCase();
+  var PRE_WINDOW = 15;
+  var POST_WINDOW = 25;
+
+  // Check pre-negation: look for negation words before the element
+  var preStart = Math.max(0, position - PRE_WINDOW);
+  var prefix = lower.substring(preStart, position);
+
+  for (var i = 0; i < preNegationWords.length; i++) {
+    var word = preNegationWords[i];
+    var idx = prefix.lastIndexOf(word);
+    if (idx >= 0) {
+      // Ensure it's a word boundary (preceded by space/start, followed by space)
+      var charBefore = idx > 0 ? prefix[idx - 1] : " ";
+      var charAfter = idx + word.length < prefix.length ? prefix[idx + word.length] : " ";
+      if (/[\s,;:(]/.test(charBefore) || idx === 0) {
+        if (/[\s,;:)]/.test(charAfter) || idx + word.length === prefix.length) {
+          return true;
+        }
+      }
+    }
+  }
+
+  // Check post-negation: look for negation phrases after the element
+  var postStart = position + elementLength;
+  var postEnd = Math.min(lower.length, postStart + POST_WINDOW);
+  var suffix = lower.substring(postStart, postEnd);
+
+  for (var i = 0; i < postNegationPhrases.length; i++) {
+    if (suffix.includes(postNegationPhrases[i])) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+// =====================
+// Generic element extraction
+// =====================
+
+// Extract mentioned elements from a message, given a list of evaluable elements.
+// If evaluableElements is provided, searches for those. Otherwise, falls back to R\d+ regex.
+// Returns array of { element: "R4", position: 5 }
+function extractMentionedElements(message, evaluableElements) {
+  var mentions = [];
+  var seen = {};
+
+  if (Array.isArray(evaluableElements) && evaluableElements.length > 0) {
+    var lower = message.toLowerCase();
+    for (var i = 0; i < evaluableElements.length; i++) {
+      var elem = evaluableElements[i];
+      var elemLower = elem.toLowerCase();
+      var searchFrom = 0;
+
+      while (searchFrom < lower.length) {
+        var idx = lower.indexOf(elemLower, searchFrom);
+        if (idx < 0) break;
+
+        // Word boundary check: element should not be part of a larger word
+        var charBefore = idx > 0 ? lower[idx - 1] : " ";
+        var charAfter = idx + elemLower.length < lower.length ? lower[idx + elemLower.length] : " ";
+        var validBefore = /[\s,;:(¿¡"'\-]/.test(charBefore) || idx === 0;
+        var validAfter = /[\s,;:).?!"'\-]/.test(charAfter) || idx + elemLower.length === lower.length;
+
+        if (validBefore && validAfter) {
+          var normalized = elem.toUpperCase();
+          if (!seen[normalized]) {
+            seen[normalized] = true;
+            mentions.push({ element: normalized, position: idx });
+          }
+        }
+        searchFrom = idx + 1;
+      }
+    }
+  } else {
+    // Fallback: extract using R\d+ regex (backwards compatibility for circuits)
+    var regex = /R\d+/gi;
+    var match;
+    while ((match = regex.exec(message)) !== null) {
+      var normalized = match[0].toUpperCase();
+      if (!seen[normalized]) {
+        seen[normalized] = true;
+        mentions.push({ element: normalized, position: match.index });
+      }
+    }
+  }
+
+  return mentions;
+}
+
+// Legacy function: extract resistance names using regex (kept for backward compatibility)
+function extractResistances(message) {
+  var matches = message.match(/R\d+/gi);
   if (matches == null) {
     return [];
   }
-
-  // Uppercase and remove duplicates
-  const unique = [];
-  const seen = {};
-  for (let i = 0; i < matches.length; i++) {
-    const r = matches[i].toUpperCase();
+  var unique = [];
+  var seen = {};
+  for (var i = 0; i < matches.length; i++) {
+    var r = matches[i].toUpperCase();
     if (seen[r] == null) {
       seen[r] = true;
       unique.push(r);
@@ -55,14 +186,14 @@ function extractResistances(message) {
   return unique;
 }
 
-// Check if two arrays of resistances contain the same elements (order doesn't matter)
+// Check if two arrays contain the same elements (order doesn't matter)
 function sameSet(a, b) {
   if (a.length !== b.length) {
     return false;
   }
-  const sorted1 = a.slice().sort();
-  const sorted2 = b.slice().sort();
-  for (let i = 0; i < sorted1.length; i++) {
+  var sorted1 = a.slice().sort();
+  var sorted2 = b.slice().sort();
+  for (var i = 0; i < sorted1.length; i++) {
     if (sorted1[i] !== sorted2[i]) {
       return false;
     }
@@ -70,45 +201,45 @@ function sameSet(a, b) {
   return true;
 }
 
-// Check if the message contains reasoning keywords
+// Check if the message contains reasoning keywords (accent-insensitive)
 function hasReasoning(message) {
-  const lower = message.toLowerCase();
-  for (let i = 0; i < reasoningPatterns.length; i++) {
-    if (lower.includes(reasoningPatterns[i])) {
+  var lower = stripAccents(message.toLowerCase());
+  for (var i = 0; i < reasoningPatterns.length; i++) {
+    if (lower.includes(stripAccents(reasoningPatterns[i]))) {
       return true;
     }
   }
   return false;
 }
 
-// Find which concept keywords appear in the message
+// Find which concept keywords appear in the message (accent-insensitive)
 function findConcepts(message) {
-  const lower = message.toLowerCase();
-  const found = [];
-  for (let i = 0; i < conceptKeywords.length; i++) {
-    if (lower.includes(conceptKeywords[i])) {
+  var lower = stripAccents(message.toLowerCase());
+  var found = [];
+  for (var i = 0; i < conceptKeywords.length; i++) {
+    if (lower.includes(stripAccents(conceptKeywords[i]))) {
       found.push(conceptKeywords[i]);
     }
   }
   return found;
 }
 
-// Check if the message is a greeting
+// Check if the message is a greeting (accent-insensitive)
 function isGreeting(message) {
-  const lower = message.toLowerCase().trim();
-  for (let i = 0; i < greetingPatterns.length; i++) {
-    if (lower.startsWith(greetingPatterns[i])) {
+  var lower = stripAccents(message.toLowerCase().trim());
+  for (var i = 0; i < greetingPatterns.length; i++) {
+    if (lower.startsWith(stripAccents(greetingPatterns[i]))) {
       return true;
     }
   }
   return false;
 }
 
-// Check if the message expresses "I don't know"
+// Check if the message expresses "I don't know" (accent-insensitive)
 function isDontKnow(message) {
-  const lower = message.toLowerCase();
-  for (let i = 0; i < dontKnowPatterns.length; i++) {
-    if (lower.includes(dontKnowPatterns[i])) {
+  var lower = stripAccents(message.toLowerCase());
+  for (var i = 0; i < dontKnowPatterns.length; i++) {
+    if (lower.includes(stripAccents(dontKnowPatterns[i]))) {
       return true;
     }
   }
@@ -117,50 +248,67 @@ function isDontKnow(message) {
 
 /*------------------------------------------------------
   Classify a student message based on:
-    - correctAnswer: array of correct resistances ["R1", "R2", "R4"]
-  Returns: { type, resistances, hasReasoning, concepts }
+    - correctAnswer: array of correct elements ["R1", "R2", "R4"]
+    - evaluableElements: (optional) all possible answer elements ["R1","R2","R3","R4","R5"]
+  Returns: { type, resistances, proposed, negated, hasReasoning, concepts }
 --------------------------------------------------------*/
-function classifyQuery(userMessage, correctAnswer) {
-  const resistances = extractResistances(userMessage);
-  const reasoning = hasReasoning(userMessage);
-  const concepts = findConcepts(userMessage);
+function classifyQuery(userMessage, correctAnswer, evaluableElements) {
+  // Extract mentioned elements with positions (generic or regex fallback)
+  var mentions = extractMentionedElements(userMessage, evaluableElements);
+
+  // Separate proposed vs negated elements
+  var proposed = [];
+  var negated = [];
+  for (var i = 0; i < mentions.length; i++) {
+    if (detectNegation(userMessage, mentions[i].position, mentions[i].element.length)) {
+      negated.push(mentions[i].element);
+    } else {
+      proposed.push(mentions[i].element);
+    }
+  }
+
+  // All mentioned elements (for backward compatibility)
+  var allMentioned = mentions.map(function (m) { return m.element; });
+
+  var reasoning = hasReasoning(userMessage);
+  var concepts = findConcepts(userMessage);
 
   // 1. Greeting
   if (isGreeting(userMessage)) {
-    return { type: types.greeting, resistances: resistances, hasReasoning: reasoning, concepts: concepts };
+    return { type: types.greeting, resistances: allMentioned, proposed: proposed, negated: negated, hasReasoning: reasoning, concepts: concepts };
   }
 
   // 2. Don't know
   if (isDontKnow(userMessage)) {
-    return { type: types.dontKnow, resistances: resistances, hasReasoning: reasoning, concepts: concepts };
+    return { type: types.dontKnow, resistances: allMentioned, proposed: proposed, negated: negated, hasReasoning: reasoning, concepts: concepts };
   }
 
-  // 3. Single word / short answer without resistances
-  if (userMessage.trim().length < 15 && resistances.length === 0) {
-    return { type: types.singleWord, resistances: resistances, hasReasoning: reasoning, concepts: concepts };
+  // 3. Single word / short answer without elements
+  if (userMessage.trim().length < 15 && allMentioned.length === 0) {
+    return { type: types.singleWord, resistances: allMentioned, proposed: proposed, negated: negated, hasReasoning: reasoning, concepts: concepts };
   }
 
-  // 4. Has correct resistances
-  if (sameSet(resistances, correctAnswer)) {
+  // 4. Check if PROPOSED elements match correct answer (ignoring negated ones)
+  if (sameSet(proposed, correctAnswer)) {
     // Correct answer but no reasoning
     if (!reasoning) {
-      return { type: types.correctNoReasoning, resistances: resistances, hasReasoning: reasoning, concepts: concepts };
+      return { type: types.correctNoReasoning, resistances: allMentioned, proposed: proposed, negated: negated, hasReasoning: reasoning, concepts: concepts };
     }
     // Correct answer with wrong concepts (uses "divisor de tensión" incorrectly for instance)
     if (concepts.length > 0) {
-      return { type: types.correctWrongReasoning, resistances: resistances, hasReasoning: reasoning, concepts: concepts };
+      return { type: types.correctWrongReasoning, resistances: allMentioned, proposed: proposed, negated: negated, hasReasoning: reasoning, concepts: concepts };
     }
     // Correct answer with good reasoning
-    return { type: types.correctGoodReasoning, resistances: resistances, hasReasoning: reasoning, concepts: concepts };
+    return { type: types.correctGoodReasoning, resistances: allMentioned, proposed: proposed, negated: negated, hasReasoning: reasoning, concepts: concepts };
   }
 
-  // 5. Wrong resistances with concept keywords -> wrong concept
+  // 5. Wrong elements with concept keywords -> wrong concept
   if (concepts.length > 0) {
-    return { type: types.wrongConcept, resistances: resistances, hasReasoning: reasoning, concepts: concepts };
+    return { type: types.wrongConcept, resistances: allMentioned, proposed: proposed, negated: negated, hasReasoning: reasoning, concepts: concepts };
   }
 
   // 6. Wrong answer
-  return { type: types.wrongAnswer, resistances: resistances, hasReasoning: reasoning, concepts: concepts };
+  return { type: types.wrongAnswer, resistances: allMentioned, proposed: proposed, negated: negated, hasReasoning: reasoning, concepts: concepts };
 }
 
-module.exports = { classifyQuery, extractResistances, types };
+module.exports = { classifyQuery, extractResistances, extractMentionedElements, types };

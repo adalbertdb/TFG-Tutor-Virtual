@@ -221,17 +221,28 @@ const confirmPhrases = {
     "eso es", "así es", "bien hecho", "en efecto", "efectivamente",
     "has identificado correctamente", "estás en lo correcto",
     "buena observación", "buen trabajo",
+    // Soft confirmations that also validate wrong answers
+    "interesante", "buena idea", "buen punto", "buen razonamiento",
+    "tiene sentido", "tienes razón", "claro que sí", "por supuesto",
+    "desde luego", "vas bien", "vas por buen camino", "bien pensado",
+    "gran observación",
   ],
   val: [
     "perfecte", "correcte", "exacte", "exactament", "molt bé",
     "això és", "així és", "ben fet", "en efecte", "efectivament",
     "has identificat correctament", "estàs en el correcte",
     "bona observació", "bon treball",
+    "interessant", "bona idea", "bon punt", "bon raonament",
+    "té sentit", "tens raó", "clar que sí", "per descomptat",
+    "vas bé", "vas per bon camí", "ben pensat", "gran observació",
   ],
   en: [
     "perfect", "correct", "exactly", "very good", "well done",
     "that's right", "that is right", "indeed", "good observation",
     "good job", "you correctly identified", "you are correct",
+    "interesting", "good idea", "good point", "good thinking",
+    "makes sense", "you're right", "of course", "nice thinking",
+    "great observation", "great",
   ],
 };
 
@@ -410,6 +421,92 @@ function getStateRevealInstruction(lang) {
 }
 
 // =====================
+// Intermediate feedback phrases (hybrid: deterministic prefix + LLM continuation)
+// =====================
+
+const intermediateFeedback = {
+  wrong: {
+    es: [
+      "Hmm, no estoy seguro de eso.",
+      "No del todo. Vamos a pensarlo de otra manera.",
+      "Hay conceptos que debemos revisar.",
+      "No es del todo correcto. Pensemos en esto desde otra perspectiva.",
+    ],
+    val: [
+      "Hmm, no estic segur d'això.",
+      "No del tot. Pensem-ho d'una altra manera.",
+      "Hi ha conceptes que hem de revisar.",
+      "No és del tot correcte. Pensem en això des d'una altra perspectiva.",
+    ],
+    en: [
+      "Hmm, I'm not sure about that.",
+      "Not quite. Let's think about this differently.",
+      "There are some concepts we need to review.",
+      "That's not entirely correct. Let's look at this from another angle.",
+    ],
+  },
+  partial: {
+    es: [
+      "Vas por buen camino, pero hay que pulir algunos conceptos.",
+      "Casi. Hay algo que debemos revisar antes de continuar.",
+      "Estás avanzando, pero falta justificar tu razonamiento.",
+    ],
+    val: [
+      "Vas per bon camí, però cal polir alguns conceptes.",
+      "Quasi. Hi ha alguna cosa que hem de revisar abans de continuar.",
+      "Estàs avançant, però falta justificar el teu raonament.",
+    ],
+    en: [
+      "You're on the right track, but we need to refine some concepts.",
+      "Almost. There's something we need to review before continuing.",
+      "You're making progress, but you need to justify your reasoning.",
+    ],
+  },
+};
+
+function getIntermediateFeedback(type, lang) {
+  lang = lang || "es";
+  var phrases = intermediateFeedback[type];
+  if (!phrases) return [];
+  return phrases[lang] || phrases.es || [];
+}
+
+function getRandomIntermediatePhrase(type, lang) {
+  var phrases = getIntermediateFeedback(type, lang);
+  if (phrases.length === 0) return "";
+  return phrases[Math.floor(Math.random() * phrases.length)];
+}
+
+// =====================
+// Element naming guardrail instruction (generic, not resistance-specific)
+// =====================
+
+function getElementNamingInstruction(lang) {
+  if (lang === "val") {
+    return (
+      "\n\nCRÍTIC: La teua resposta anterior NOMENA un element concret en una pregunta o directiva. " +
+      "MAI has de senyalar un element específic perquè l'alumne l'analitze (ex: '¿Què passa amb R5?', 'Observa R3'). " +
+      "En el seu lloc, fes preguntes sobre CONCEPTES generals: el recorregut del corrent, " +
+      "quines condicions es necessiten perquè circule corrent per una branca, etc."
+    );
+  }
+  if (lang === "en") {
+    return (
+      "\n\nCRITICAL: Your previous response NAMES a specific element in a question or directive. " +
+      "NEVER point to a specific element for the student to analyze (e.g., 'What about R5?', 'Look at R3'). " +
+      "Instead, ask questions about general CONCEPTS: the path of current, " +
+      "what conditions are needed for current to flow through a branch, etc."
+    );
+  }
+  return (
+    "\n\nCRÍTICO: Tu respuesta anterior NOMBRA un elemento concreto en una pregunta o directiva. " +
+    "NUNCA debes señalar un elemento específico para que el alumno lo analice (ej: '¿Qué pasa con R5?', 'Observa R3'). " +
+    "En su lugar, haz preguntas sobre CONCEPTOS generales: el recorrido de la corriente, " +
+    "qué condiciones se necesitan para que circule corriente por una rama, etc."
+  );
+}
+
+// =====================
 // Term normalization for retrieval
 // =====================
 
@@ -497,6 +594,9 @@ module.exports = {
   getFalseConfirmationInstruction,
   getPartialConfirmationInstruction,
   getStateRevealInstruction,
+  getElementNamingInstruction,
+  getIntermediateFeedback,
+  getRandomIntermediatePhrase,
   normalizeToSpanish,
   getAllPatterns,
   greetingPatterns,

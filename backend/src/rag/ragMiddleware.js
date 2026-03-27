@@ -9,13 +9,13 @@ const fs = require("fs");
 const path = require("path");
 const config = require("./config");
 const { runFullPipeline } = require("./ragPipeline");
-const { checkSolutionLeak, getStrongerInstruction, checkFalseConfirmation, getFalseConfirmationInstruction, checkPrematureConfirmation, getPartialConfirmationInstruction, checkStateReveal, getStateRevealInstruction } = require("./guardrails");
+const { checkSolutionLeak, getStrongerInstruction, checkFalseConfirmation, getFalseConfirmationInstruction, checkPrematureConfirmation, getPartialConfirmationInstruction, checkStateReveal, getStateRevealInstruction, checkElementNaming, removeOpeningConfirmation } = require("./guardrails");
 const { loadKG } = require("./knowledgeGraph");
 const { loadIndex } = require("./bm25");
 const { logInteraction } = require("./logger");
 const { setRequestId, emitEvent } = require("./ragEventBus");
 const { buildTutorSystemPrompt } = require("../utils/promptBuilder");
-const { resolveLanguage, getFinishMessages } = require("../utils/languageManager");
+const { resolveLanguage, getFinishMessages, getElementNamingInstruction, getRandomIntermediatePhrase } = require("../utils/languageManager");
 const Ejercicio = require("../models/ejercicio");
 const Interaccion = require("../models/interaccion");
 
@@ -86,6 +86,39 @@ function getCorrectAnswer(ejercicio) {
     result.push(String(answer[i]).toUpperCase().trim());
   }
   return result;
+}
+
+// Get all evaluable elements for generic extraction (correct + incorrect)
+// 1. Explicit field in tutorContext (for non-electronics subjects)
+// 2. Extract from netlist (backwards compatibility for circuits)
+// 3. Fallback: only the correct answer
+function getEvaluableElements(ejercicio) {
+  var tc = ejercicio.tutorContext || {};
+
+  // 1. Explicit field
+  if (Array.isArray(tc.elementosEvaluables) && tc.elementosEvaluables.length > 0) {
+    return tc.elementosEvaluables.map(function (e) { return String(e).toUpperCase().trim(); });
+  }
+
+  // 2. Extract from netlist (circuit components: R, V, I, C, L, etc.)
+  if (tc.netlist) {
+    var matches = tc.netlist.match(/[A-Za-z]\d+/g);
+    if (matches) {
+      var seen = {};
+      var unique = [];
+      for (var i = 0; i < matches.length; i++) {
+        var m = matches[i].toUpperCase();
+        if (!seen[m]) {
+          seen[m] = true;
+          unique.push(m);
+        }
+      }
+      return unique;
+    }
+  }
+
+  // 3. Fallback: only the correct answer
+  return (tc.respuestaCorrecta || []).map(function (e) { return String(e).toUpperCase().trim(); });
 }
 
 // Send SSE event to client (same format as the existing handler)
@@ -196,10 +229,20 @@ router.post("/chat/stream", async function (req, res, next) {
     // Use canonical exercise number for retrieval (exercise 2 → 1 in ChromaDB)
     var searchNum = canonicalExercise[exerciseNum] || exerciseNum;
 
-    // 3. Run RAG pipeline
-    emitEvent("pipeline_start", "start", { userMessage: userMessage.trim(), exerciseNum: searchNum, correctAnswer: correctAnswer, userId: userId });
+    // Get all evaluable elements for generic extraction (correct + incorrect)
+    var evaluableElements = getEvaluableElements(ejercicio);
+
+    // Resolve language early (needed for intermediate feedback phrases in pipeline)
+    var earlyLang = "es";
+    if (interaccionId && mongoose.Types.ObjectId.isValid(interaccionId)) {
+      var earlyHistory = await loadHistory(interaccionId);
+      earlyLang = resolveLanguage(earlyHistory);
+    }
+
+    // 3. Run RAG pipeline (with generic evaluable elements and language)
+    emitEvent("pipeline_start", "start", { userMessage: userMessage.trim(), exerciseNum: searchNum, correctAnswer: correctAnswer, userId: userId, evaluableElements: evaluableElements });
     var pipelineStart = Date.now();
-    var ragResult = await runFullPipeline(userMessage.trim(), searchNum, correctAnswer, userId);
+    var ragResult = await runFullPipeline(userMessage.trim(), searchNum, correctAnswer, userId, evaluableElements, earlyLang);
     var pipelineTime = Date.now() - pipelineStart;
     emitEvent("pipeline_end", "end", { decision: ragResult.decision, classification: ragResult.classification, augmentationLength: (ragResult.augmentation || "").length, sourcesCount: (ragResult.sources || []).length, pipelineTimeMs: pipelineTime });
 
@@ -401,6 +444,44 @@ router.post("/chat/stream", async function (req, res, next) {
         emitEvent("ollama_retry", "end", { reason: "state_reveal", responseLength: fullResponse.length });
       }
 
+      // 11d. Check if the LLM names specific evaluable elements in questions/directives
+      var namingCheck = checkElementNaming(fullResponse, evaluableElements);
+      emitEvent("guardrail_element_naming", "end", { responsePreview: fullResponse, result: namingCheck, passed: !namingCheck.named, check: "Checks if LLM names specific elements in questions or directives" });
+      if (namingCheck.named) {
+        guardrailTriggered = true;
+        console.log("[RAG] Guardrail triggered (element naming): " + namingCheck.details);
+        emitEvent("ollama_retry", "start", { reason: "element_naming", retryCount: 1 });
+
+        var namingPrompt = augmentedPrompt + getElementNamingInstruction(lang);
+        var namingRetry = [{ role: "system", content: namingPrompt }];
+        for (var ni = 0; ni < history.length; ni++) {
+          namingRetry.push(history[ni]);
+        }
+        fullResponse = await callOllama(namingRetry);
+        emitEvent("ollama_retry", "end", { reason: "element_naming", responseLength: fullResponse.length });
+      }
+
+      // 11e. Deterministic prefix fallback: if after all retries the response STILL
+      // starts with a confirmation phrase for a wrong/partial answer, force a prefix
+      var finalConfirmCheck = checkFalseConfirmation(fullResponse, ragResult.classification);
+      if (finalConfirmCheck.confirmed) {
+        var prefix = getRandomIntermediatePhrase("wrong", lang);
+        if (prefix) {
+          console.log("[RAG] Deterministic prefix forced: " + prefix);
+          fullResponse = prefix + " " + removeOpeningConfirmation(fullResponse, lang);
+          guardrailTriggered = true;
+        }
+      }
+      var finalPrematureCheck = checkPrematureConfirmation(fullResponse, ragResult.classification);
+      if (finalPrematureCheck.premature) {
+        var partialPrefix = getRandomIntermediatePhrase("partial", lang);
+        if (partialPrefix) {
+          console.log("[RAG] Deterministic prefix forced (partial): " + partialPrefix);
+          fullResponse = partialPrefix + " " + removeOpeningConfirmation(fullResponse, lang);
+          guardrailTriggered = true;
+        }
+      }
+
       // 12. Send response to client as SSE
       sseSend(res, { chunk: fullResponse });
       emitEvent("response_sent", "end", { responseLength: fullResponse.length, responsePreview: fullResponse, containsFIN: fullResponse.includes(FIN_TOKEN), guardrailTriggered: guardrailTriggered });
@@ -416,6 +497,7 @@ router.post("/chat/stream", async function (req, res, next) {
           falseConfirmation: confirmCheck.confirmed,
           prematureConfirmation: prematureCheck.premature,
           stateReveal: stateCheck.revealed,
+          elementNaming: namingCheck.named,
         },
         timing: {
           pipelineMs: pipelineTime,

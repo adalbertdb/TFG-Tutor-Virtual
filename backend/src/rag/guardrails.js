@@ -114,6 +114,11 @@ function checkSolutionLeak(response, correctAnswer) {
   return { leaked: false, details: "" };
 }
 
+// Normalize accented characters for accent-insensitive matching
+function stripAccents(str) {
+  return str.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+}
+
 // Affirmative phrases that indicate the tutor is confirming a student's statement (multi-language)
 const confirmPhrases = getAllPatterns(confirmDict);
 
@@ -133,12 +138,12 @@ function checkFalseConfirmation(response, classification) {
     return { confirmed: false, details: "" };
   }
 
-  const lower = response.toLowerCase().trim();
+  const lower = stripAccents(response.toLowerCase().trim());
 
   // Check if response starts with or contains a confirmation phrase in the first 60 chars
   const firstPart = lower.substring(0, 60);
   for (let i = 0; i < confirmPhrases.length; i++) {
-    if (firstPart.includes(confirmPhrases[i])) {
+    if (firstPart.includes(stripAccents(confirmPhrases[i]))) {
       return {
         confirmed: true,
         details: "Response confirms wrong answer with: '" + confirmPhrases[i] + "'",
@@ -169,11 +174,11 @@ function checkPrematureConfirmation(response, classification) {
     return { premature: false, details: "" };
   }
 
-  var lower = response.toLowerCase().trim();
+  var lower = stripAccents(response.toLowerCase().trim());
   var firstPart = lower.substring(0, 60);
 
   for (var i = 0; i < confirmPhrases.length; i++) {
-    if (firstPart.includes(confirmPhrases[i])) {
+    if (firstPart.includes(stripAccents(confirmPhrases[i]))) {
       return {
         premature: true,
         classificationType: classification,
@@ -240,4 +245,85 @@ function getStrongerInstruction(lang) {
   return getLangStrongerInstruction(lang);
 }
 
-module.exports = { checkSolutionLeak, getStrongerInstruction, checkFalseConfirmation, getFalseConfirmationInstruction, checkPrematureConfirmation, getPartialConfirmationInstruction, checkStateReveal, getStateRevealInstruction };
+// =====================
+// Guardrail 5: Element Naming in Questions (generic)
+// =====================
+
+// Directive verbs that indicate the tutor is pointing the student to a specific element
+var directivePatterns = [
+  /\b(analiza|observa|mira|fíjate en|considera|piensa en|revisa|examina|estudia)\b/i,
+  /\b(look at|consider|analyze|think about|observe|examine|study|check)\b/i,
+  /\b(analitza|observa|fixa't en|considera|pensa en|revisa|examina)\b/i,
+];
+
+// Check if the tutor names a specific evaluable element in a question or directive
+function checkElementNaming(response, evaluableElements) {
+  if (!Array.isArray(evaluableElements) || evaluableElements.length === 0) {
+    return { named: false, details: "" };
+  }
+
+  // Split into sentences
+  var sentences = response.split(/(?<=[.!?\n])\s*/);
+  for (var i = 0; i < sentences.length; i++) {
+    var sent = sentences[i];
+    var sentLower = sent.toLowerCase();
+
+    // Check if this sentence is a question or a directive
+    var isQuestion = sent.includes("?") || sent.includes("¿");
+    var isDirective = false;
+    for (var d = 0; d < directivePatterns.length; d++) {
+      if (directivePatterns[d].test(sent)) {
+        isDirective = true;
+        break;
+      }
+    }
+
+    if (!isQuestion && !isDirective) {
+      continue;
+    }
+
+    // Check if any evaluable element is named in this sentence
+    for (var j = 0; j < evaluableElements.length; j++) {
+      var elem = evaluableElements[j];
+      var elemLower = elem.toLowerCase();
+      var idx = sentLower.indexOf(elemLower);
+      if (idx >= 0) {
+        // Word boundary check
+        var charBefore = idx > 0 ? sentLower[idx - 1] : " ";
+        var charAfter = idx + elemLower.length < sentLower.length ? sentLower[idx + elemLower.length] : " ";
+        var validBefore = /[\s,;:(¿¡"'\-]/.test(charBefore) || idx === 0;
+        var validAfter = /[\s,;:).?!"'\-]/.test(charAfter) || idx + elemLower.length === sentLower.length;
+
+        if (validBefore && validAfter) {
+          return {
+            named: true,
+            element: elem,
+            details: "Response names '" + elem + "' in a " + (isQuestion ? "question" : "directive"),
+          };
+        }
+      }
+    }
+  }
+
+  return { named: false, details: "" };
+}
+
+// Utility: remove the opening confirmation phrase from a response
+// Used when the guardrail retry still produces a confirmation — we strip it and prepend a deterministic prefix
+function removeOpeningConfirmation(response, lang) {
+  // Try to remove the first sentence if it's short (likely just a confirmation phrase)
+  var firstSentenceEnd = response.search(/[.!?]\s/);
+  if (firstSentenceEnd > 0 && firstSentenceEnd < 60) {
+    return response.substring(firstSentenceEnd + 1).trim();
+  }
+  // If no short first sentence, just return as is
+  return response;
+}
+
+module.exports = {
+  checkSolutionLeak, getStrongerInstruction,
+  checkFalseConfirmation, getFalseConfirmationInstruction,
+  checkPrematureConfirmation, getPartialConfirmationInstruction,
+  checkStateReveal, getStateRevealInstruction,
+  checkElementNaming, removeOpeningConfirmation,
+};
