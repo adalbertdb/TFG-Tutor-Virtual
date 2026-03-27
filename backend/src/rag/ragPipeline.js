@@ -171,6 +171,7 @@ function formatClassificationHint(classification, correctAnswer, lang) {
     correct_wrong_reasoning: "The student got the right answer but uses a wrong concept. Focus on correcting the alternative conception with a Socratic question about the concept, NOT about specific elements. Do NOT use phrases like 'Perfect', 'Correct', 'Very good', 'Exactly'. Acknowledge they are on the right track but challenge the wrong reasoning.",
     correct_good_reasoning: "The student got the right answer with good reasoning. Confirm briefly and finish.",
     wrong_concept: "The student shows an alternative conception. Focus ONLY on challenging that wrong concept with a Socratic question. Do NOT guide towards specific elements.",
+    partial_correct: "The student is partially correct — their reasoning about excluded elements is right, but they haven't given the complete answer yet. Acknowledge their correct reasoning briefly and guide them to think about which elements DO contribute, using a Socratic question. Do NOT reveal specific elements or say 'Correct' / 'Perfect'.",
   };
 
   var hint = hints[classification.type];
@@ -198,7 +199,7 @@ function formatClassificationHint(classification, correctAnswer, lang) {
     }
   }
 
-  if (classification.type === "correct_no_reasoning" || classification.type === "correct_wrong_reasoning") {
+  if (classification.type === "partial_correct" || classification.type === "correct_no_reasoning" || classification.type === "correct_wrong_reasoning") {
     var partialPhrases = getIntermediateFeedback("partial", lang);
     if (partialPhrases.length > 0) {
       text += "\nSTART your response with one of these phrases (choose the most appropriate):\n";

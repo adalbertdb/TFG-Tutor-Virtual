@@ -25,6 +25,7 @@ const types = {
   correctWrongReasoning: "correct_wrong_reasoning",     // R1, R2 y R4 porque forman un divisor de tensión
   correctGoodReasoning: "correct_good_reasoning",       // R1, R2 y R4 porque R3 está en abierto y R5 cortocircuitada, no pasando corriente por ellos
   wrongConcept: "wrong_concept",                        // R1 y R2 dado que forman un divisor de tensión
+  partialCorrect: "partial_correct",                    // "no pasa por R3" (correct exclusion, incomplete answer)
 };
 // Note: in the correctWrongReasoning option, if the student gives the right resistances and uses a concept keyword, it will classify the answer as incorrect, so that the RAG will look for the knowledge graph and check if the concept was misunderstood or not.
 
@@ -50,6 +51,19 @@ const preNegationWords = [
   "not", "without", "nor", "neither", "except", "excluding",
 ];
 
+// Multi-word pre-negation phrases checked with a wider window (30 chars)
+// These are less prone to false positives than single words, so a bigger window is safe
+const preNegationPhrases = [
+  // es - flow negation before element
+  "no pasa corriente por", "no circula corriente por", "no pasa por",
+  "no circula por", "no fluye por", "no hay corriente en", "no hay corriente por",
+  // val
+  "no passa corrent per", "no circula corrent per", "no passa per",
+  // en
+  "no current flows through", "current doesn't flow through",
+  "no current through", "doesn't flow through",
+];
+
 // Phrases that AFTER an element indicate the student is rejecting it
 const postNegationPhrases = [
   // es - direct rejection
@@ -72,6 +86,14 @@ const postNegationPhrases = [
   "should not", "shouldn't be", "is not", "isn't",
   // en - flow negation
   "no current flows", "current doesn't flow", "no current", "doesn't flow",
+  // es - state description (implies element is excluded: "R3 está en abierto" = R3 doesn't contribute)
+  "está en abierto", "en abierto", "en circuito abierto",
+  "está cortocircuitada", "está cortocircuitado", "cortocircuitada", "cortocircuitado",
+  "en cortocircuito", "en corto",
+  // val - state description
+  "està en obert", "en circuit obert", "curtcircuitada", "curtcircuitat", "en curtcircuit",
+  // en - state description
+  "is open", "is shorted", "is short-circuited", "in open circuit", "in short circuit",
 ];
 
 // Check if there is a negation around a specific position in the message
@@ -97,6 +119,16 @@ function detectNegation(message, position, elementLength) {
           return true;
         }
       }
+    }
+  }
+
+  // Check pre-negation phrases with wider window (multi-word → less false positive risk)
+  var PHRASE_PRE_WINDOW = 30;
+  var phrasePreStart = Math.max(0, position - PHRASE_PRE_WINDOW);
+  var phrasePrefix = lower.substring(phrasePreStart, position);
+  for (var i = 0; i < preNegationPhrases.length; i++) {
+    if (phrasePrefix.includes(preNegationPhrases[i])) {
+      return true;
     }
   }
 
@@ -294,20 +326,78 @@ function classifyQuery(userMessage, correctAnswer, evaluableElements) {
     if (!reasoning) {
       return { type: types.correctNoReasoning, resistances: allMentioned, proposed: proposed, negated: negated, hasReasoning: reasoning, concepts: concepts };
     }
-    // Correct answer with wrong concepts (uses "divisor de tensión" incorrectly for instance)
+    // Correct answer with concepts — check if negations are also correct
+    // If student correctly negates elements AND uses concept keywords, the concepts are likely correct
+    // (e.g. "R1, R2 y R4 porque R3 está en abierto y R5 cortocircuitada" → correct usage of "abierto"/"cortocircuitada")
     if (concepts.length > 0) {
+      if (negated.length > 0) {
+        var allNegCorrect = true;
+        for (var i = 0; i < negated.length; i++) {
+          for (var j = 0; j < correctAnswer.length; j++) {
+            if (negated[i] === correctAnswer[j]) {
+              allNegCorrect = false;
+              break;
+            }
+          }
+          if (!allNegCorrect) break;
+        }
+        if (allNegCorrect) {
+          // Correct answer + correct negations + concepts = good reasoning
+          return { type: types.correctGoodReasoning, resistances: allMentioned, proposed: proposed, negated: negated, hasReasoning: reasoning, concepts: concepts };
+        }
+      }
+      // Concepts without correct negations → potentially wrong reasoning
       return { type: types.correctWrongReasoning, resistances: allMentioned, proposed: proposed, negated: negated, hasReasoning: reasoning, concepts: concepts };
     }
     // Correct answer with good reasoning
     return { type: types.correctGoodReasoning, resistances: allMentioned, proposed: proposed, negated: negated, hasReasoning: reasoning, concepts: concepts };
   }
 
-  // 5. Wrong elements with concept keywords -> wrong concept
+  // 5. Partial correct: student correctly excludes elements and/or proposes only correct ones, but answer is incomplete
+  //    e.g. "no pasa por R3" when R3 is NOT in the correct answer → correct exclusion
+  //    e.g. "R1 y R2 pero no R3" → R1,R2 correct, R3 correctly excluded, but missing R4
+  if (negated.length > 0 || proposed.length > 0) {
+    var allNegationsCorrect = true;
+    for (var i = 0; i < negated.length; i++) {
+      for (var j = 0; j < correctAnswer.length; j++) {
+        if (negated[i] === correctAnswer[j]) {
+          allNegationsCorrect = false;
+          break;
+        }
+      }
+      if (!allNegationsCorrect) break;
+    }
+
+    var allProposalsCorrect = true;
+    for (var i = 0; i < proposed.length; i++) {
+      var inCorrect = false;
+      for (var j = 0; j < correctAnswer.length; j++) {
+        if (proposed[i] === correctAnswer[j]) {
+          inCorrect = true;
+          break;
+        }
+      }
+      if (!inCorrect) {
+        allProposalsCorrect = false;
+        break;
+      }
+    }
+
+    if (allNegationsCorrect && allProposalsCorrect) {
+      // If student has correct negations, they're reasoning correctly even if they use concept keywords
+      // Only require no concepts when there are no negations (can't verify concept usage)
+      if (negated.length > 0 || concepts.length === 0) {
+        return { type: types.partialCorrect, resistances: allMentioned, proposed: proposed, negated: negated, hasReasoning: reasoning, concepts: concepts };
+      }
+    }
+  }
+
+  // 6. Wrong elements with concept keywords -> wrong concept
   if (concepts.length > 0) {
     return { type: types.wrongConcept, resistances: allMentioned, proposed: proposed, negated: negated, hasReasoning: reasoning, concepts: concepts };
   }
 
-  // 6. Wrong answer
+  // 7. Wrong answer
   return { type: types.wrongAnswer, resistances: allMentioned, proposed: proposed, negated: negated, hasReasoning: reasoning, concepts: concepts };
 }
 

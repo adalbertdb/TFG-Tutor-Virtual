@@ -162,7 +162,7 @@ function getFalseConfirmationInstruction(lang) {
 // Check if the tutor prematurely confirms a partially correct answer
 // (correct resistances but missing or wrong reasoning)
 function checkPrematureConfirmation(response, classification) {
-  var partialTypes = ["correct_no_reasoning", "correct_wrong_reasoning"];
+  var partialTypes = ["correct_no_reasoning", "correct_wrong_reasoning", "partial_correct"];
   var isPartial = false;
   for (var i = 0; i < partialTypes.length; i++) {
     if (classification === partialTypes[i]) {
