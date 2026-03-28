@@ -226,6 +226,10 @@ const confirmPhrases = {
     "tiene sentido", "tienes razón", "claro que sí", "por supuesto",
     "desde luego", "vas bien", "vas por buen camino", "bien pensado",
     "gran observación",
+    // Phrases detected in real tutor responses
+    "estás en el camino correcto", "en el camino correcto",
+    "eso es correcto", "bien razonado", "buen análisis",
+    "justo", "lo has entendido", "has comprendido",
   ],
   val: [
     "perfecte", "correcte", "exacte", "exactament", "molt bé",
@@ -235,6 +239,9 @@ const confirmPhrases = {
     "interessant", "bona idea", "bon punt", "bon raonament",
     "té sentit", "tens raó", "clar que sí", "per descomptat",
     "vas bé", "vas per bon camí", "ben pensat", "gran observació",
+    "estàs en el camí correcte", "en el camí correcte",
+    "això és correcte", "ben raonat", "bona anàlisi",
+    "ho has entés", "has comprés",
   ],
   en: [
     "perfect", "correct", "exactly", "very good", "well done",
@@ -243,6 +250,9 @@ const confirmPhrases = {
     "interesting", "good idea", "good point", "good thinking",
     "makes sense", "you're right", "of course", "nice thinking",
     "great observation", "great",
+    "you're on the right track", "on the right track", "right track",
+    "that is correct", "well reasoned", "good analysis",
+    "you've got it", "you understand",
   ],
 };
 

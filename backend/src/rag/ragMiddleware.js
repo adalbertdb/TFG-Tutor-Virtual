@@ -504,7 +504,10 @@ router.post("/chat/stream", async function (req, res, next) {
           var prefix = getRandomIntermediatePhrase("wrong", lang);
           if (prefix) {
             console.log("[RAG] Deterministic prefix forced: " + prefix);
-            fullResponse = prefix + " " + removeOpeningConfirmation(fullResponse, lang);
+            var cleaned = removeOpeningConfirmation(fullResponse, lang);
+            // Double pass: strip confirmations that survived after the first cleanup
+            var secondPass = removeOpeningConfirmation(cleaned, lang);
+            fullResponse = prefix + " " + secondPass;
             guardrailTriggered = true;
           }
         }
@@ -513,7 +516,9 @@ router.post("/chat/stream", async function (req, res, next) {
           var partialPrefix = getRandomIntermediatePhrase("partial", lang);
           if (partialPrefix) {
             console.log("[RAG] Deterministic prefix forced (partial): " + partialPrefix);
-            fullResponse = partialPrefix + " " + removeOpeningConfirmation(fullResponse, lang);
+            var cleaned = removeOpeningConfirmation(fullResponse, lang);
+            var secondPass = removeOpeningConfirmation(cleaned, lang);
+            fullResponse = partialPrefix + " " + secondPass;
             guardrailTriggered = true;
           }
         }
