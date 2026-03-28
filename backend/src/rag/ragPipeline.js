@@ -179,6 +179,20 @@ function formatClassificationHint(classification, correctAnswer, lang) {
     return "";
   }
 
+  // When the student doesn't mention specific elements, they are likely responding
+  // to a Socratic sub-question (not giving the final answer). In this case, soften
+  // aggressive hints so the LLM can evaluate the response using conversation history.
+  var noElementsMentioned = classification.resistances.length === 0;
+  var aggressiveTypes = ["wrong_concept", "wrong_answer", "single_word"];
+  var isAggressiveType = aggressiveTypes.indexOf(classification.type) >= 0;
+
+  if (noElementsMentioned && isAggressiveType) {
+    hint = "The student is responding to your previous Socratic question without mentioning specific elements. "
+      + "Evaluate their response IN CONTEXT of your last question and the conversation history. "
+      + "If their response correctly addresses your question, acknowledge it briefly and advance to the next reasoning step. "
+      + "Do NOT re-ask the same question. Do NOT assume the student is wrong just because they didn't name specific elements.";
+  }
+
   var text = "[RESPONSE MODE]\n";
   text += "The student's message has been classified as: " + classification.type + ".\n";
   text += hint + "\n";
@@ -188,7 +202,8 @@ function formatClassificationHint(classification, correctAnswer, lang) {
   }
 
   // Inject intermediate feedback phrases for wrong/partial classifications (hybrid approach)
-  if (classification.type === "wrong_answer" || classification.type === "wrong_concept") {
+  // Skip injecting "wrong" starter phrases when hints were softened (no elements mentioned)
+  if ((classification.type === "wrong_answer" || classification.type === "wrong_concept") && !(noElementsMentioned && isAggressiveType)) {
     var wrongPhrases = getIntermediateFeedback("wrong", lang);
     if (wrongPhrases.length > 0) {
       text += "\nSTART your response with one of these phrases (choose the most appropriate):\n";
@@ -420,6 +435,17 @@ async function runPipeline(userMessage, exerciseNum, correctAnswer, userId, eval
     return result;
   }
 
+  if (classification.type === types.partialCorrect) {
+    emitEvent("routing_decision", "end", { classification: classification.type, decision: "rag_examples", path: "partial_correct → rag_examples" });
+    emitEvent("hybrid_search_start", "start", { query: userMessage, exerciseNum: exerciseNum, topK: config.TOP_K_FINAL });
+    var datasetResults = await hybridSearch(userMessage, exerciseNum);
+    emitEvent("hybrid_search_end", "end", { resultCount: datasetResults.length, topScore: datasetResults.length > 0 ? Math.round(datasetResults[0].score * 10000) / 10000 : 0, results: datasetResults.map(function(r, i) { return { rank: i + 1, index: r.index, score: Math.round(r.score * 10000) / 10000, student: r.student || "", tutor: r.tutor || "" }; }) });
+    result.augmentation = formatClassificationHint(classification, correctAnswer, lang) + formatExamples(datasetResults);
+    result.decision = "rag_examples";
+    result.sources = datasetResults;
+    return result;
+  }
+
   return result;
 }
 
@@ -453,6 +479,8 @@ async function runFullPipeline(userMessage, exerciseNum, correctAnswer, userId, 
   result.augmentation += "6. If the student shows an AC (alternative conception), focus on challenging THAT concept.\n";
   result.augmentation += "7. If the student gets the right answer but without reasoning or with wrong reasoning, do NOT confirm as complete. Acknowledge progress but ask for justification or challenge the wrong concept.\n";
   result.augmentation += "8. If the student REJECTS an element that IS in the correct answer, do NOT agree. Guide them to reconsider.\n";
+  result.augmentation += "9. NEVER repeat a question the student has already answered correctly. If they demonstrated understanding, move forward to the next step.\n";
+  result.augmentation += "10. Evaluate the student considering the FULL conversation history, not just their last message. They may have justified their reasoning in previous messages.\n";
 
   emitEvent("augmentation_built", "end", { augmentationLength: result.augmentation.length, decision: result.decision, classification: result.classification, sourcesCount: result.sources.length, sections: ["hint", history.length > 0 ? "history" : null, result.sources.length > 0 ? "examples" : null, "guardrail_reminder"].filter(Boolean), augmentationPreview: result.augmentation });
 

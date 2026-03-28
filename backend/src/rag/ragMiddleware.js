@@ -203,6 +203,76 @@ async function loadHistory(interaccionId) {
   return messages;
 }
 
+// Build a short hint reminding the LLM what its last question was,
+// so it can evaluate the student's response in context and avoid re-asking.
+function buildConversationProgressHint(history) {
+  if (!Array.isArray(history) || history.length < 2) return "";
+
+  var lastAssistant = null;
+  for (var i = history.length - 1; i >= 0; i--) {
+    if (history[i].role === "assistant") {
+      lastAssistant = history[i].content;
+      break;
+    }
+  }
+  if (!lastAssistant) return "";
+
+  var questions = lastAssistant.match(/[^.!?]*\?/g);
+  var lastQuestion = questions && questions.length > 0
+    ? questions[questions.length - 1].trim()
+    : null;
+  if (!lastQuestion) return "";
+
+  return "[CONVERSATION CONTEXT]\n"
+    + "Your last question to the student was: \"" + lastQuestion + "\"\n"
+    + "Evaluate the student's current response as an answer to THIS question.\n"
+    + "If they answered it correctly, acknowledge and advance. Do NOT re-ask.\n\n";
+}
+
+// Detect if the tutor has been asking the same question repeatedly.
+// Compares questions (sentences ending with ?) from the last 2 assistant messages.
+async function detectTutorRepetition(interaccionId) {
+  var doc = await Interaccion.findById(interaccionId)
+    .select({ conversacion: { $slice: -6 } })
+    .lean();
+  if (!doc || !Array.isArray(doc.conversacion)) return { repeating: false };
+
+  // Collect the last 2 assistant messages
+  var assistantMessages = [];
+  for (var i = doc.conversacion.length - 1; i >= 0 && assistantMessages.length < 2; i--) {
+    if (doc.conversacion[i].role === "assistant") {
+      assistantMessages.push(doc.conversacion[i].content || "");
+    }
+  }
+  if (assistantMessages.length < 2) return { repeating: false };
+
+  // Extract the last question from each assistant message
+  function extractLastQuestion(text) {
+    var qs = text.match(/[^.!?]*\?/g);
+    return qs && qs.length > 0 ? qs[qs.length - 1].toLowerCase().trim() : "";
+  }
+
+  var q0 = extractLastQuestion(assistantMessages[0]); // most recent
+  var q1 = extractLastQuestion(assistantMessages[1]); // previous
+  if (!q0 || !q1) return { repeating: false };
+
+  // Compute word overlap (only words > 3 chars to ignore articles/prepositions)
+  var words0 = q0.split(/\s+/).filter(function(w) { return w.length > 3; });
+  var words1 = q1.split(/\s+/).filter(function(w) { return w.length > 3; });
+  if (words0.length === 0) return { repeating: false };
+
+  var overlap = 0;
+  for (var w = 0; w < words0.length; w++) {
+    if (words1.indexOf(words0[w]) >= 0) overlap++;
+  }
+  var similarity = overlap / words0.length;
+
+  if (similarity > 0.5) {
+    return { repeating: true, lastQuestion: q0 };
+  }
+  return { repeating: false };
+}
+
 // End SSE connection cleanly
 function endSSE(res, hb) {
   clearInterval(hb);
@@ -332,10 +402,13 @@ router.post("/chat/stream", async function (req, res, next) {
         || ragResult.classification === "correct_wrong_reasoning";
 
       // 7a. Loop detection: if the student has given correct/partial answers before, don't keep looping
+      var repetitionInfo = await detectTutorRepetition(iid);
       if (isCorrect && ragResult.classification !== "correct_good_reasoning") {
         var prevCorrectCount = await countPreviousCorrectTurns(iid);
-        if (prevCorrectCount >= 2) {
-          console.log("[RAG] Loop detection: " + prevCorrectCount + " previous correct turns, overriding " + ragResult.classification + " → correct_good_reasoning");
+        // Lower threshold from 2 to 1 when tutor repetition is detected
+        var loopThreshold = repetitionInfo.repeating ? 1 : 2;
+        if (prevCorrectCount >= loopThreshold) {
+          console.log("[RAG] Loop detection: " + prevCorrectCount + " previous correct turns (threshold=" + loopThreshold + "), overriding " + ragResult.classification + " → correct_good_reasoning");
           ragResult.classification = "correct_good_reasoning";
           isCorrect = true;
         }
@@ -387,7 +460,17 @@ router.post("/chat/stream", async function (req, res, next) {
       var history = await loadHistory(iid);
       var lang = resolveLanguage(history);
       var basePrompt = buildSystemPrompt(ejercicio, lang);
-      var augmentedPrompt = basePrompt + "\n\n" + ragResult.augmentation;
+      var progressHint = buildConversationProgressHint(history);
+      // If tutor repetition detected, inject a strong instruction to move forward
+      var repetitionHint = "";
+      if (repetitionInfo.repeating) {
+        console.log("[RAG] Tutor repetition detected, injecting move-forward instruction");
+        repetitionHint = "[ANTI-LOOP]\n"
+          + "IMPORTANT: You have been asking the same question repeatedly. "
+          + "The student has already addressed this topic in the conversation. "
+          + "MOVE FORWARD to the next reasoning step. Do NOT ask the same question again.\n\n";
+      }
+      var augmentedPrompt = basePrompt + "\n\n" + progressHint + repetitionHint + ragResult.augmentation;
       emitEvent("prompt_built", "end", { systemPromptLength: basePrompt.length, ragAugmentationLength: ragResult.augmentation.length, totalPromptLength: augmentedPrompt.length, augmentationPreview: ragResult.augmentation });
 
       // 9. Load conversation history (last N messages)

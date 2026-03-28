@@ -37,6 +37,40 @@ const reasoningPatterns = getAllPatterns(reasoningDict);
 // Concept keywords that may indicate wrong reasoning if used incorrectly
 const conceptKeywords = getAllPatterns(conceptDict);
 
+// State-description concepts: factual circuit states, NOT alternative conceptions.
+// When a student uses ONLY these terms (e.g. "porque está en cortocircuito y abierto"),
+// they are describing real circuit states as justification, not applying a wrong concept.
+var stateDescriptionConcepts = [
+  // es
+  "cortocircuito", "cortocircuitada", "cortocircuitado", "corto",
+  "circuito abierto", "abierto", "abierta",
+  "interruptor cerrado", "interruptor abierto",
+  // val
+  "curtcircuit", "curtcircuitada", "curtcircuitat", "curt",
+  "circuit obert", "obert", "oberta",
+  "interruptor tancat", "interruptor obert",
+  // en
+  "short circuit", "shorted", "short",
+  "open circuit", "open",
+  "switch closed", "switch open",
+];
+
+// Check if ALL found concepts are state descriptions (not ACs like "divisor de tensión")
+function allConceptsAreStateDescriptions(concepts) {
+  for (var i = 0; i < concepts.length; i++) {
+    var lower = concepts[i].toLowerCase();
+    var isState = false;
+    for (var j = 0; j < stateDescriptionConcepts.length; j++) {
+      if (lower === stateDescriptionConcepts[j]) {
+        isState = true;
+        break;
+      }
+    }
+    if (!isState) return false;
+  }
+  return true;
+}
+
 // =====================
 // Negation detection (multi-language)
 // =====================
@@ -348,6 +382,12 @@ function classifyQuery(userMessage, correctAnswer, evaluableElements) {
           // Correct answer + correct negations + concepts = good reasoning
           return { type: types.correctGoodReasoning, resistances: allMentioned, proposed: proposed, negated: negated, hasReasoning: reasoning, concepts: concepts };
         }
+      }
+      // If concepts are purely state descriptions (cortocircuito, abierto, etc.)
+      // AND student has reasoning connectors → correct reasoning about circuit states
+      // e.g. "R1 R2 R4 porque el resto está en cortocircuito y abierto"
+      if (reasoning && allConceptsAreStateDescriptions(concepts)) {
+        return { type: types.correctGoodReasoning, resistances: allMentioned, proposed: proposed, negated: negated, hasReasoning: reasoning, concepts: concepts };
       }
       // Concepts without correct negations → potentially wrong reasoning
       return { type: types.correctWrongReasoning, resistances: allMentioned, proposed: proposed, negated: negated, hasReasoning: reasoning, concepts: concepts };
