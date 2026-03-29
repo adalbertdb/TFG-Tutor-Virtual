@@ -58,6 +58,8 @@ Socratic questions: "¿Qué ocurre con la corriente cuando un componente está c
 -------------------------------------------------------------------------*/
 
   let text = "[DOMAIN KNOWLEDGE]\n";
+  text += "IMPORTANT: Use the following knowledge as internal reference ONLY. Do NOT copy the Socratic questions verbatim. ";
+  text += "Adapt them to the current conversation context, what the student has already answered, and avoid repeating anything you already asked.\n\n";
   for (let i = 0; i < kgResults.length; i++) {
     const entry = kgResults[i];
     text = text + "Concept: \"" + entry.node1 + " " + entry.relation + " " + entry.node2 + "\"\n";

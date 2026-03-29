@@ -143,6 +143,26 @@ const reasoningPatterns = {
   en: ["because", "since", "due to", "given that", "therefore", "that's why"],
 };
 
+const frustrationPatterns = {
+  es: [
+    "ya te lo he dicho", "ya te lo he explicado", "ya lo he dicho",
+    "ya lo he explicado", "porque si", "porque sí", "ya lo dije",
+    "eso ya lo dije", "te lo acabo de decir", "ya te he dicho",
+    "ya te dije", "me repites lo mismo", "siempre lo mismo",
+    "otra vez lo mismo", "ya respondí a eso", "ya contesté a eso",
+  ],
+  val: [
+    "ja t'ho he dit", "ja t'ho he explicat", "ja ho he dit",
+    "ja ho he explicat", "perquè sí", "ja et vaig dir",
+    "em repeteixes el mateix", "sempre el mateix", "altra vegada el mateix",
+  ],
+  en: [
+    "i already told you", "i already explained", "i said that already",
+    "i already said", "you keep asking the same", "same question again",
+    "i just told you", "already answered that", "stop repeating",
+  ],
+};
+
 const conceptKeywords = {
   es: [
     "divisor de tensión", "divisor de corriente",
@@ -637,6 +657,7 @@ module.exports = {
   dontKnowPatterns,
   reasoningPatterns,
   conceptKeywords,
+  frustrationPatterns,
   revealPhrases,
   confirmPhrases,
   stateRevealPatterns,

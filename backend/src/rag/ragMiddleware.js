@@ -15,7 +15,7 @@ const { loadIndex } = require("./bm25");
 const { logInteraction } = require("./logger");
 const { setRequestId, emitEvent } = require("./ragEventBus");
 const { buildTutorSystemPrompt } = require("../utils/promptBuilder");
-const { resolveLanguage, getFinishMessages, getElementNamingInstruction, getRandomIntermediatePhrase } = require("../utils/languageManager");
+const { resolveLanguage, getFinishMessages, getElementNamingInstruction, getRandomIntermediatePhrase, getAllPatterns, frustrationPatterns: frustrationDict } = require("../utils/languageManager");
 const Ejercicio = require("../models/ejercicio");
 const Interaccion = require("../models/interaccion");
 
@@ -100,9 +100,12 @@ function getEvaluableElements(ejercicio) {
     return tc.elementosEvaluables.map(function (e) { return String(e).toUpperCase().trim(); });
   }
 
-  // 2. Extract from netlist (circuit components: R, V, I, C, L, etc.)
+  // 2. Extract from netlist (only passive/active components that can be answers: R, C, L, D, I)
+  //    Excludes node identifiers (N*) and voltage sources (V*) which are structural,
+  //    not answer elements. Students mentioning nodes in reasoning (e.g. "from N1 to N2")
+  //    should NOT be treated as proposing wrong answer elements.
   if (tc.netlist) {
-    var matches = tc.netlist.match(/[A-Za-z]\d+/g);
+    var matches = tc.netlist.match(/[RCLDI]\d+/gi);
     if (matches) {
       var seen = {};
       var unique = [];
@@ -185,6 +188,41 @@ async function countPreviousCorrectTurns(interaccionId) {
   return count;
 }
 
+// Count total assistant turns in the conversation
+async function countTotalAssistantTurns(interaccionId) {
+  var doc = await Interaccion.findById(interaccionId).select({ conversacion: 1 }).lean();
+  if (!doc || !Array.isArray(doc.conversacion)) return 0;
+  var count = 0;
+  for (var i = 0; i < doc.conversacion.length; i++) {
+    if (doc.conversacion[i].role === "assistant") count++;
+  }
+  return count;
+}
+
+// Count consecutive wrong classifications from the end of conversation
+// Returns how many assistant messages in a row have wrong_answer, wrong_concept, or single_word
+async function countConsecutiveWrongTurns(interaccionId) {
+  var doc = await Interaccion.findById(interaccionId).select({ conversacion: 1 }).lean();
+  if (!doc || !Array.isArray(doc.conversacion)) return 0;
+  var wrongTypes = ["wrong_answer", "wrong_concept", "single_word"];
+  var count = 0;
+  for (var i = doc.conversacion.length - 1; i >= 0; i--) {
+    var msg = doc.conversacion[i];
+    if (msg.role !== "assistant") continue;
+    if (!msg.metadata || !msg.metadata.classification) break;
+    var isWrong = false;
+    for (var j = 0; j < wrongTypes.length; j++) {
+      if (msg.metadata.classification === wrongTypes[j]) {
+        isWrong = true;
+        break;
+      }
+    }
+    if (!isWrong) break;
+    count++;
+  }
+  return count;
+}
+
 // Load last N messages from conversation history
 async function loadHistory(interaccionId) {
   const doc = await Interaccion.findById(interaccionId)
@@ -230,16 +268,17 @@ function buildConversationProgressHint(history) {
 }
 
 // Detect if the tutor has been asking the same question repeatedly.
-// Compares questions (sentences ending with ?) from the last 2 assistant messages.
+// Uses a sliding window: compares ALL pairs among the last 4 assistant questions.
+// This catches alternating patterns (A-B-A-B) that a 2-message comparison would miss.
 async function detectTutorRepetition(interaccionId) {
   var doc = await Interaccion.findById(interaccionId)
-    .select({ conversacion: { $slice: -6 } })
+    .select({ conversacion: { $slice: -12 } })
     .lean();
   if (!doc || !Array.isArray(doc.conversacion)) return { repeating: false };
 
-  // Collect the last 2 assistant messages
+  // Collect the last 4 assistant messages
   var assistantMessages = [];
-  for (var i = doc.conversacion.length - 1; i >= 0 && assistantMessages.length < 2; i--) {
+  for (var i = doc.conversacion.length - 1; i >= 0 && assistantMessages.length < 4; i--) {
     if (doc.conversacion[i].role === "assistant") {
       assistantMessages.push(doc.conversacion[i].content || "");
     }
@@ -252,25 +291,48 @@ async function detectTutorRepetition(interaccionId) {
     return qs && qs.length > 0 ? qs[qs.length - 1].toLowerCase().trim() : "";
   }
 
-  var q0 = extractLastQuestion(assistantMessages[0]); // most recent
-  var q1 = extractLastQuestion(assistantMessages[1]); // previous
-  if (!q0 || !q1) return { repeating: false };
-
-  // Compute word overlap (only words > 3 chars to ignore articles/prepositions)
-  var words0 = q0.split(/\s+/).filter(function(w) { return w.length > 3; });
-  var words1 = q1.split(/\s+/).filter(function(w) { return w.length > 3; });
-  if (words0.length === 0) return { repeating: false };
-
-  var overlap = 0;
-  for (var w = 0; w < words0.length; w++) {
-    if (words1.indexOf(words0[w]) >= 0) overlap++;
+  // Compute word overlap between two questions (words > 3 chars)
+  function questionSimilarity(qa, qb) {
+    var wordsA = qa.split(/\s+/).filter(function(w) { return w.length > 3; });
+    var wordsB = qb.split(/\s+/).filter(function(w) { return w.length > 3; });
+    if (wordsA.length === 0) return 0;
+    var overlap = 0;
+    for (var w = 0; w < wordsA.length; w++) {
+      if (wordsB.indexOf(wordsA[w]) >= 0) overlap++;
+    }
+    return overlap / wordsA.length;
   }
-  var similarity = overlap / words0.length;
 
-  if (similarity > 0.5) {
-    return { repeating: true, lastQuestion: q0 };
+  // Extract questions from all collected messages
+  var questions = [];
+  for (var m = 0; m < assistantMessages.length; m++) {
+    var q = extractLastQuestion(assistantMessages[m]);
+    if (q) questions.push(q);
+  }
+  if (questions.length < 2) return { repeating: false };
+
+  // Compare all pairs: if ANY pair has > 50% overlap, repetition detected
+  for (var a = 0; a < questions.length; a++) {
+    for (var b = a + 1; b < questions.length; b++) {
+      var sim = questionSimilarity(questions[a], questions[b]);
+      if (sim > 0.5) {
+        return { repeating: true, lastQuestion: questions[0] };
+      }
+    }
   }
   return { repeating: false };
+}
+
+// Detect if the student is expressing frustration (repeating themselves, "I already told you", etc.)
+var frustrationPatternsAll = getAllPatterns(frustrationDict);
+function detectFrustration(message) {
+  var lower = message.toLowerCase();
+  for (var i = 0; i < frustrationPatternsAll.length; i++) {
+    if (lower.includes(frustrationPatternsAll[i])) {
+      return true;
+    }
+  }
+  return false;
 }
 
 // End SSE connection cleanly
@@ -414,6 +476,24 @@ router.post("/chat/stream", async function (req, res, next) {
         }
       }
 
+      // 7b. Global loop-breaking: independent of classification
+      // Counts consecutive wrong turns and total turns to prevent infinite loops
+      var wrongStreak = await countConsecutiveWrongTurns(iid);
+      var totalTurns = await countTotalAssistantTurns(iid);
+      var stuckHint = "";
+
+      if (wrongStreak >= config.MAX_WRONG_STREAK || totalTurns >= config.MAX_TOTAL_TURNS) {
+        console.log("[RAG] Global loop-break: wrongStreak=" + wrongStreak + " totalTurns=" + totalTurns);
+        stuckHint = "[STUDENT IS STUCK]\n"
+          + "CRITICAL: The student has been struggling for many turns (" + totalTurns + " total, " + wrongStreak + " wrong in a row).\n"
+          + "CHANGE YOUR STRATEGY COMPLETELY. Do NOT repeat any previous question.\n"
+          + "Instead:\n"
+          + "1. Briefly summarize what the student has gotten right so far.\n"
+          + "2. Give a CONCRETE HINT: describe a property of the circuit that helps narrow down the answer (e.g., 'In this circuit, there is a component whose two terminals are connected to the same node — what does that imply?').\n"
+          + "3. Ask a very specific, NEW question that directly advances toward the answer.\n"
+          + "Keep your response short and focused.\n\n";
+      }
+
       if (isCorrect) {
         // Load history to check if the student has already been reasoning
         var prevHistory = await loadHistory(iid);
@@ -466,11 +546,25 @@ router.post("/chat/stream", async function (req, res, next) {
       if (repetitionInfo.repeating) {
         console.log("[RAG] Tutor repetition detected, injecting move-forward instruction");
         repetitionHint = "[ANTI-LOOP]\n"
-          + "IMPORTANT: You have been asking the same question repeatedly. "
-          + "The student has already addressed this topic in the conversation. "
-          + "MOVE FORWARD to the next reasoning step. Do NOT ask the same question again.\n\n";
+          + "CRITICAL: You have been asking similar questions repeatedly and the student is stuck.\n"
+          + "DO NOT ask any question you have asked before. Instead:\n"
+          + "1. Briefly acknowledge what the student has said correctly so far.\n"
+          + "2. Give a CONCRETE HINT about the circuit (without revealing the answer).\n"
+          + "3. Ask a NEW, DIFFERENT question that the student has NOT been asked before.\n\n";
       }
-      var augmentedPrompt = basePrompt + "\n\n" + progressHint + repetitionHint + ragResult.augmentation;
+      // If the student is frustrated, inject an empathetic instruction
+      var frustrationHint = "";
+      if (detectFrustration(text)) {
+        console.log("[RAG] Student frustration detected");
+        frustrationHint = "[STUDENT FRUSTRATED]\n"
+          + "The student is expressing frustration because they feel they already answered your question.\n"
+          + "DO NOT repeat any previous question. Instead:\n"
+          + "1. Acknowledge their effort and validate what they said correctly.\n"
+          + "2. If they have already provided correct reasoning, ACCEPT IT and move forward.\n"
+          + "3. If something is still missing, give a more concrete hint before asking.\n"
+          + "Be empathetic and brief.\n\n";
+      }
+      var augmentedPrompt = basePrompt + "\n\n" + progressHint + repetitionHint + frustrationHint + stuckHint + ragResult.augmentation;
       emitEvent("prompt_built", "end", { systemPromptLength: basePrompt.length, ragAugmentationLength: ragResult.augmentation.length, totalPromptLength: augmentedPrompt.length, augmentationPreview: ragResult.augmentation });
 
       // 9. Load conversation history (last N messages)

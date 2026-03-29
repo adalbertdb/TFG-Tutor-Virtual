@@ -64,6 +64,11 @@ module.exports = {
     7: "dataset_exercise_7.json",
   },
 
+  // Loop-breaking: max consecutive wrong classifications before forcing scaffold
+  MAX_WRONG_STREAK: Number(process.env.RAG_MAX_WRONG_STREAK || 4),
+  // Loop-breaking: max total assistant turns before forcing stronger hints
+  MAX_TOTAL_TURNS: Number(process.env.RAG_MAX_TOTAL_TURNS || 16),
+
   // Feature flag to enable/disable RAG
   RAG_ENABLED: process.env.RAG_ENABLED !== "false",
 };
