@@ -9,8 +9,8 @@ const fs = require("fs");
 const path = require("path");
 const config = require("../../../infrastructure/llm/config");
 const { runFullPipeline } = require("../../../domain/services/rag/ragPipeline");
-const { checkSolutionLeak, getStrongerInstruction, checkFalseConfirmation, getFalseConfirmationInstruction, checkPrematureConfirmation, getPartialConfirmationInstruction, checkStateReveal, getStateRevealInstruction, checkElementNaming, removeOpeningConfirmation, redactElementMentions } = require("../../../domain/services/rag/guardrails");
-const { loadKG } = require("../../../infrastructure/search/knowledgeGraph");
+const { checkSolutionLeak, getStrongerInstruction, checkFalseConfirmation, getFalseConfirmationInstruction, checkPrematureConfirmation, getPartialConfirmationInstruction, checkStateReveal, getStateRevealInstruction, checkElementNaming, removeOpeningConfirmation, redactElementMentions, redactStateRevealSentence, loadConceptPatternsFromKG } = require("../../../domain/services/rag/guardrails");
+const { loadKG, getAllEntries } = require("../../../infrastructure/search/knowledgeGraph");
 const { loadIndex } = require("../../../infrastructure/search/bm25");
 const { logInteraction } = require("../../../infrastructure/llm/logger");
 const { setRequestId, emitEvent } = require("../../../infrastructure/events/ragEventBus");
@@ -37,11 +37,18 @@ const canonicalExercise = {};
 
 // RAG initialization: load KG + BM25 at the start
 let ragReady = false;
+let kgConceptPatterns = [];
 
 function initRAG() {
   try {
     // Load knowledge graph into memory
     loadKG();
+    try {
+      kgConceptPatterns = loadConceptPatternsFromKG(getAllEntries());
+      console.log("[RAG] Loaded " + kgConceptPatterns.length + " KG concept patterns for state-reveal guardrail");
+    } catch (kgErr) {
+      console.warn("[RAG] Could not derive concept patterns from KG:", kgErr.message);
+    }
 
     // Build canonical mapping and load BM25 for all exercises
     const fileToFirst = {};
@@ -748,13 +755,17 @@ router.post("/chat/stream", async function (req, res, next) {
         emitEvent("ollama_retry", "end", { reason: "premature_confirmation", responseLength: fullResponse.length });
       }
 
-      // 11c. Check if the LLM reveals the state of a resistance (internal topology info)
-      var stateCheck = checkStateReveal(fullResponse);
-      emitEvent("guardrail_state_reveal", "end", { responsePreview: fullResponse, result: stateCheck, passed: !stateCheck.revealed, check: "Checks if LLM reveals internal resistance states (open/short/topology)" });
-      if (stateCheck.revealed) {
+      // 11c. Check if the LLM reveals the state/topology/concept bound to a
+      // specific evaluable element. Generic: any element type + any concept
+      // name loaded from the knowledge graph. Iterative (up to 2 retries)
+      // plus deterministic redaction fallback — the student must discover
+      // states themselves, so we prefer a clunky placeholder to a leak.
+      var stateCheck = checkStateReveal(fullResponse, evaluableElements, kgConceptPatterns);
+      emitEvent("guardrail_state_reveal", "end", { responsePreview: fullResponse, result: stateCheck, passed: !stateCheck.revealed, check: "Checks if LLM reveals internal element states or KG concepts bound to a specific element" });
+      for (var stateAttempt = 1; stateAttempt <= 2 && stateCheck.revealed; stateAttempt++) {
         guardrailTriggered = true;
-        console.log("[RAG] Guardrail triggered (state reveal): " + stateCheck.details);
-        emitEvent("ollama_retry", "start", { reason: "state_reveal", retryCount: 1 });
+        console.log("[RAG] Guardrail triggered (state reveal) attempt " + stateAttempt + ": " + stateCheck.details);
+        emitEvent("ollama_retry", "start", { reason: "state_reveal", retryCount: stateAttempt });
 
         var statePrompt = augmentedPrompt + getStateRevealInstruction(lang);
         var stateRetry = [{ role: "system", content: statePrompt }];
@@ -763,6 +774,19 @@ router.post("/chat/stream", async function (req, res, next) {
         }
         fullResponse = await callOllama(stateRetry);
         emitEvent("ollama_retry", "end", { reason: "state_reveal", responseLength: fullResponse.length });
+        stateCheck = checkStateReveal(fullResponse, evaluableElements, kgConceptPatterns);
+      }
+
+      // 11c-bis. Surgical redaction: if the LLM still reveals state, rewrite
+      // the offending sentence only, keeping the rest of the response intact.
+      if (stateCheck.revealed) {
+        var stateRedact = redactStateRevealSentence(fullResponse, evaluableElements, stateCheck.pattern, lang);
+        if (stateRedact.redacted) {
+          guardrailTriggered = true;
+          console.log("[RAG] Deterministic state-reveal redaction applied");
+          emitEvent("guardrail_redaction", "end", { reason: "state_reveal_fallback", before: fullResponse, after: stateRedact.text, pattern: stateCheck.pattern });
+          fullResponse = stateRedact.text;
+        }
       }
 
       // 11d. Check if the LLM names specific evaluable elements in questions/directives

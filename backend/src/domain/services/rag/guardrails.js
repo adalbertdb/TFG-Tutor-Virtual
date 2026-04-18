@@ -198,41 +198,106 @@ function getPartialConfirmationInstruction(lang, classificationType) {
 // Phrases that reveal the state of a specific resistance (internal topology info, multi-language)
 const stateRevealPatterns = getAllPatterns(stateRevealDict);
 
-// Check if the response reveals the internal state of a specific resistance
-// e.g. "R5 está cortocircuitada" or "recuerda que R3 está en circuito abierto"
-function checkStateReveal(response) {
-  const lower = response.toLowerCase();
-  const resistances = extractResistances(response);
+// Extract mentions of any evaluable element in a text.
+// Works for any element identifier (R1, C2, L3, D1, V1, I2, etc.) as long as
+// it's passed in `evaluableElements`. Uses word-boundary matching.
+function extractElementMentions(text, evaluableElements) {
+  if (!Array.isArray(evaluableElements) || evaluableElements.length === 0) {
+    return [];
+  }
+  const found = [];
+  const seen = {};
+  const lower = text.toLowerCase();
+  for (let i = 0; i < evaluableElements.length; i++) {
+    const elem = evaluableElements[i];
+    const lowerElem = String(elem).toLowerCase();
+    const re = new RegExp(
+      "(^|[^a-z0-9_])" + lowerElem.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "([^a-z0-9_]|$)",
+      "i"
+    );
+    if (re.test(lower) && !seen[lowerElem]) {
+      seen[lowerElem] = true;
+      found.push(elem);
+    }
+  }
+  return found;
+}
 
-  if (resistances.length === 0) {
+// Check if the response reveals the internal state / topological property of
+// a specific evaluable element (cortocircuitada, en abierto, en serie, en
+// paralelo, misma potencial, etc.). Generic: works with any element type
+// (resistencias, condensadores, inductores, diodos...). Does NOT allow
+// rhetorical questions: "¿recuerdas que R5 está cortocircuitada?" is still a
+// leak because it tells the student the state.
+//
+// @param {string} response
+// @param {string[]} [evaluableElements] - list of element ids from the exercise
+// @param {string[]} [extraPatterns] - additional reveal patterns (e.g. loaded from KG)
+function checkStateReveal(response, evaluableElements, extraPatterns) {
+  // Backward compatible: if no evaluableElements passed, fall back to Rn regex
+  const elems = Array.isArray(evaluableElements) && evaluableElements.length > 0
+    ? evaluableElements
+    : null;
+
+  const mentioned = elems
+    ? extractElementMentions(response, elems)
+    : extractResistances(response);
+
+  if (mentioned.length === 0) {
     return { revealed: false, details: "" };
   }
 
-  // Split into sentences
+  const allPatterns = Array.isArray(extraPatterns) && extraPatterns.length > 0
+    ? stateRevealPatterns.concat(extraPatterns)
+    : stateRevealPatterns;
+
   const sentences = response.split(/[.!?\n]/);
   for (let i = 0; i < sentences.length; i++) {
-    const sentLower = sentences[i].toLowerCase();
-    // Check if this sentence contains a resistance AND a state reveal phrase
-    const sentResistances = extractResistances(sentences[i]);
-    if (sentResistances.length === 0) {
-      continue;
-    }
+    const sent = sentences[i];
+    const sentLower = sent.toLowerCase();
+    const sentMentioned = elems
+      ? extractElementMentions(sent, elems)
+      : extractResistances(sent);
+    if (sentMentioned.length === 0) continue;
 
-    for (let j = 0; j < stateRevealPatterns.length; j++) {
-      if (sentLower.includes(stateRevealPatterns[j])) {
-        // Allow if it's a question (the tutor is asking, not telling)
-        if (sentences[i].trim().endsWith("?") || sentLower.includes("¿")) {
-          continue;
-        }
+    for (let j = 0; j < allPatterns.length; j++) {
+      if (sentLower.includes(allPatterns[j])) {
         return {
           revealed: true,
-          details: "Response reveals state of " + sentResistances.join(", ") + " with: '" + stateRevealPatterns[j] + "'",
+          element: sentMentioned[0],
+          pattern: allPatterns[j],
+          details: "Response reveals state of " + sentMentioned.join(", ") + " with: '" + allPatterns[j] + "'",
         };
       }
     }
   }
 
   return { revealed: false, details: "" };
+}
+
+// Extract additional concept patterns from the knowledge graph so the state
+// reveal check stays aligned with new concepts without editing hardcoded lists.
+// Reads Node1/Node2/"AC name" fields and derives simple lowercase forms.
+//
+// @param {object[]} kg - parsed knowledge graph JSON
+// @returns {string[]} additional phrases that, if asserted alongside an
+//                     evaluable element, imply state reveal.
+function loadConceptPatternsFromKG(kg) {
+  if (!Array.isArray(kg)) return [];
+  const set = {};
+  const push = function (s) {
+    if (typeof s !== "string") return;
+    const t = s.trim().toLowerCase();
+    if (t && t.length >= 4 && t.length <= 60) set[t] = true;
+  };
+  for (let i = 0; i < kg.length; i++) {
+    const entry = kg[i] || {};
+    push(entry.Node1);
+    push(entry.Node2);
+    push(entry["AC name"]);
+    push(entry["AC name.1"]);
+  }
+  return Object.keys(set);
 }
 
 // Instruction to append when the tutor reveals the state of a resistance
@@ -343,6 +408,37 @@ function removeOpeningConfirmation(response, lang) {
   return result || response;
 }
 
+// Surgical redaction: locate the sentence that reveals element state and
+// replace the element mention + the state/concept pattern with a generic
+// placeholder, keeping the rest of the response intact. Used as the last
+// resort when the LLM retries couldn't clean a state-reveal.
+function redactStateRevealSentence(response, evaluableElements, pattern, lang) {
+  if (!pattern || !Array.isArray(evaluableElements) || evaluableElements.length === 0) {
+    return { text: response, redacted: false };
+  }
+  var placeholders = {
+    es: "ese elemento tiene una propiedad relevante que debes identificar",
+    val: "eixe element té una propietat rellevant que has d'identificar",
+    en: "that element has a relevant property you should identify",
+  };
+  var placeholder = placeholders[lang] || placeholders.es;
+
+  var sentences = response.split(/(?<=[.!?\n])\s*/);
+  var redacted = false;
+  for (var i = 0; i < sentences.length; i++) {
+    var sent = sentences[i];
+    var lowerSent = sent.toLowerCase();
+    if (!lowerSent.includes(pattern.toLowerCase())) continue;
+
+    var mentions = extractElementMentions(sent, evaluableElements);
+    if (mentions.length === 0) continue;
+
+    sentences[i] = placeholder + (sent.endsWith(" ") ? " " : "");
+    redacted = true;
+  }
+  return { text: sentences.join(""), redacted: redacted };
+}
+
 // Deterministic last-resort redaction: if after retries the response still
 // names correct elements in questions/directives, rewrite those mentions to a
 // generic placeholder. Prefers a clunky-but-safe message over a leak.
@@ -419,4 +515,7 @@ module.exports = {
   checkStateReveal, getStateRevealInstruction,
   checkElementNaming, removeOpeningConfirmation,
   redactElementMentions,
+  redactStateRevealSentence,
+  extractElementMentions,
+  loadConceptPatternsFromKG,
 };

@@ -74,13 +74,36 @@ class GuardrailAgent extends AgentInterface {
       );
     }
 
-    // 4. State Reveal Check
-    if (g.checkStateReveal(response)) {
+    // 4. State Reveal Check — generic over evaluableElements + KG-derived
+    // concept patterns. If LLM retries can't fix it, surgical redaction.
+    var stateCheck = g.checkStateReveal(
+      response,
+      context.evaluableElements,
+      context.kgConceptPatterns || []
+    );
+    for (var stateAttempt = 1; stateAttempt <= 2 && stateCheck.revealed; stateAttempt++) {
       triggered.stateReveal = true;
       response = await this._retry(
         context,
         g.getStateRevealInstruction(context.lang)
       );
+      stateCheck = g.checkStateReveal(
+        response,
+        context.evaluableElements,
+        context.kgConceptPatterns || []
+      );
+    }
+    if (stateCheck.revealed && typeof g.redactStateRevealSentence === "function") {
+      var redact = g.redactStateRevealSentence(
+        response,
+        context.evaluableElements,
+        stateCheck.pattern,
+        context.lang
+      );
+      if (redact.redacted) {
+        triggered.stateReveal = true;
+        response = redact.text;
+      }
     }
 
     context.finalResponse = response;
