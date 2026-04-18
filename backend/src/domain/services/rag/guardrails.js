@@ -508,6 +508,86 @@ function redactElementMentions(response, correctAnswer, lang) {
   return { text: text, redacted: changed };
 }
 
+// Detect when the tutor is EXPLAINING a concept instead of asking. Pedagogically,
+// the student must derive the concept; the tutor must only scaffold with questions.
+// This check is triggered when the assistant response contains didactic "tells"
+// such as "this means that...", "when X is Y, then Z", "exactly, when...", etc.
+// Multi-language (es/val/en). Returns { explaining: bool, pattern, details }.
+const didacticExplanationPatterns = [
+  // es
+  "esto significa que",
+  "esto quiere decir que",
+  "eso significa",
+  "lo que significa es",
+  "cuando una resistencia está",
+  "cuando un componente está",
+  "si una resistencia está",
+  "si dos puntos están al mismo potencial",
+  "entonces no fluye",
+  "entonces no circula",
+  "entonces no pasa corriente",
+  "impide que la corriente fluya",
+  "impide que circule corriente",
+  "no permite que pase corriente",
+  "se puede eliminar del circuito",
+  "se comporta como",
+  "equivale a",
+  "es equivalente a",
+  "exacto, cuando",
+  "correcto, cuando",
+  // val
+  "això significa que",
+  "això vol dir que",
+  "quan una resistència està",
+  "quan un component està",
+  "si dos punts estan al mateix potencial",
+  "impedeix que el corrent passe",
+  "no permet que passe corrent",
+  // en
+  "this means that",
+  "that means",
+  "what this means is",
+  "when a resistor is",
+  "when a component is",
+  "if two points are at the same potential",
+  "prevents current from flowing",
+  "does not allow current to flow",
+  "it can be removed from the circuit",
+  "acts as",
+  "is equivalent to",
+  "exactly, when",
+];
+
+function checkDidacticExplanation(response) {
+  if (typeof response !== "string" || response.length === 0) {
+    return { explaining: false, details: "" };
+  }
+  const lower = response.toLowerCase();
+  for (let i = 0; i < didacticExplanationPatterns.length; i++) {
+    const p = didacticExplanationPatterns[i];
+    if (lower.includes(p)) {
+      return {
+        explaining: true,
+        pattern: p,
+        details: "Response contains didactic explanation pattern: '" + p + "'",
+      };
+    }
+  }
+  return { explaining: false, details: "" };
+}
+
+// Instruction returned to the LLM when a didactic explanation is detected,
+// asking it to rewrite as a single scaffolding question.
+function getScaffoldInstruction(lang) {
+  if (lang === "en") {
+    return "\n\nIMPORTANT: Your previous answer explained a concept instead of asking. Rewrite your response as ONE single scaffolding question about a visible feature of the circuit. Do not define, do not explain, do not reveal states. Only ask.";
+  }
+  if (lang === "val") {
+    return "\n\nIMPORTANT: La teua resposta anterior explicava un concepte en compte de preguntar. Reescriu la resposta com UNA sola pregunta d'andamiatge sobre una característica visible del circuit. No definisques, no expliques, no reveles estats. Només pregunta.";
+  }
+  return "\n\nIMPORTANTE: Tu respuesta anterior explicaba un concepto en lugar de preguntar. Reescribe la respuesta como UNA sola pregunta de andamiaje sobre una característica visible del circuito. No definas, no expliques, no reveles estados. Solo pregunta.";
+}
+
 // Last-mile formatter: the dataset style is concise prose with a single final
 // question. When the LLM ignores the prompt and returns bullets / bold /
 // headings / numbered lists, we strip them deterministically. Non-destructive:
@@ -553,4 +633,6 @@ module.exports = {
   extractElementMentions,
   loadConceptPatternsFromKG,
   enforceDatasetStyle,
+  checkDidacticExplanation,
+  getScaffoldInstruction,
 };

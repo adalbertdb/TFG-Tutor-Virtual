@@ -9,7 +9,7 @@ const fs = require("fs");
 const path = require("path");
 const config = require("../../../infrastructure/llm/config");
 const { runFullPipeline } = require("../../../domain/services/rag/ragPipeline");
-const { checkSolutionLeak, getStrongerInstruction, checkFalseConfirmation, getFalseConfirmationInstruction, checkPrematureConfirmation, getPartialConfirmationInstruction, checkStateReveal, getStateRevealInstruction, checkElementNaming, removeOpeningConfirmation, redactElementMentions, redactStateRevealSentence, loadConceptPatternsFromKG, enforceDatasetStyle } = require("../../../domain/services/rag/guardrails");
+const { checkSolutionLeak, getStrongerInstruction, checkFalseConfirmation, getFalseConfirmationInstruction, checkPrematureConfirmation, getPartialConfirmationInstruction, checkStateReveal, getStateRevealInstruction, checkElementNaming, removeOpeningConfirmation, redactElementMentions, redactStateRevealSentence, loadConceptPatternsFromKG, enforceDatasetStyle, checkDidacticExplanation, getScaffoldInstruction } = require("../../../domain/services/rag/guardrails");
 const { loadKG, getAllEntries } = require("../../../infrastructure/search/knowledgeGraph");
 const { loadIndex } = require("../../../infrastructure/search/bm25");
 const { logInteraction } = require("../../../infrastructure/llm/logger");
@@ -669,6 +669,20 @@ router.post("/chat/stream", async function (req, res, next) {
           + "3. If something is still missing, give a more concrete hint before asking.\n"
           + "Be empathetic and brief.\n\n";
       }
+      // Scaffold hint: when the student says "I don't know" / "no lo sé",
+      // the tutor MUST NOT explain the concept. It must lower the scaffold
+      // and ask a SIMPLER, more CONCRETE question about a visible feature of
+      // the circuit so the student can reason themselves.
+      var scaffoldHint = "";
+      if (ragResult.classification === "dont_know") {
+        scaffoldHint = "[STUDENT DOESN'T KNOW]\n"
+          + "CRITICAL: The student just said they don't know. You MUST:\n"
+          + "- NOT explain concepts. NOT give definitions. NOT say 'this means that...' or 'when a resistor is X, then Y'.\n"
+          + "- NOT reveal internal states (short-circuited, open, same potential, etc.).\n"
+          + "- Lower the scaffolding: ask ONE simpler, more concrete question about a VISIBLE feature of the circuit (e.g. 'Look at where the two terminals of one of the elements are connected. Do you notice anything?').\n"
+          + "- Keep the response to a SINGLE question, no preamble, no explanation.\n\n";
+      }
+
       // Demand justification hint: when the student has given correct elements
       // multiple times but never justified, force the tutor to ask explicitly.
       var justificationHint = "";
@@ -683,7 +697,7 @@ router.post("/chat/stream", async function (req, res, next) {
           + "4. Do NOT provide the reasoning yourself. The student must produce it.\n\n";
       }
 
-      var augmentedPrompt = basePrompt + "\n\n" + progressHint + repetitionHint + frustrationHint + stuckHint + justificationHint + ragResult.augmentation;
+      var augmentedPrompt = basePrompt + "\n\n" + progressHint + repetitionHint + frustrationHint + stuckHint + scaffoldHint + justificationHint + ragResult.augmentation;
       emitEvent("prompt_built", "end", { systemPromptLength: basePrompt.length, ragAugmentationLength: ragResult.augmentation.length, totalPromptLength: augmentedPrompt.length, augmentationPreview: ragResult.augmentation });
 
       // 9. Load conversation history (last N messages)
@@ -865,6 +879,26 @@ router.post("/chat/stream", async function (req, res, next) {
             guardrailTriggered = true;
           }
         }
+      }
+
+      // 11d-quater. Didactic explanation check: the tutor must scaffold, not
+      // explain. If the response contains definitional/explanatory patterns
+      // ("this means that...", "when a resistor is X, then..."), retry up to
+      // 2 times asking for a pure scaffolding question instead.
+      var didacticCheck = checkDidacticExplanation(fullResponse);
+      for (var didacticAttempt = 1; didacticAttempt <= 2 && didacticCheck.explaining; didacticAttempt++) {
+        guardrailTriggered = true;
+        console.log("[RAG] Guardrail triggered (didactic explanation) attempt " + didacticAttempt + ": " + didacticCheck.details);
+        emitEvent("ollama_retry", "start", { reason: "didactic_explanation", retryCount: didacticAttempt });
+
+        var scaffoldPrompt = augmentedPrompt + getScaffoldInstruction(lang);
+        var scaffoldRetry = [{ role: "system", content: scaffoldPrompt }];
+        for (var si = 0; si < history.length; si++) {
+          scaffoldRetry.push(history[si]);
+        }
+        fullResponse = await callOllama(scaffoldRetry);
+        emitEvent("ollama_retry", "end", { reason: "didactic_explanation", responseLength: fullResponse.length });
+        didacticCheck = checkDidacticExplanation(fullResponse);
       }
 
       // 11e-bis. Enforce dataset style: strip markdown (bullets, bold,
