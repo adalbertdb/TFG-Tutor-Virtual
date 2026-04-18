@@ -508,6 +508,40 @@ function redactElementMentions(response, correctAnswer, lang) {
   return { text: text, redacted: changed };
 }
 
+// Last-mile formatter: the dataset style is concise prose with a single final
+// question. When the LLM ignores the prompt and returns bullets / bold /
+// headings / numbered lists, we strip them deterministically. Non-destructive:
+// keeps the original if it already looks clean.
+function enforceDatasetStyle(response) {
+  if (typeof response !== "string") return response;
+  var text = response;
+  var changed = false;
+
+  // Strip markdown headings "# ...", "## ...", "### ..."
+  text = text.replace(/^\s{0,3}#{1,6}\s+/gm, function () { changed = true; return ""; });
+
+  // Strip **bold** and __bold__ markers (keep the inner text)
+  text = text.replace(/\*\*(.+?)\*\*/g, function (_, inner) { changed = true; return inner; });
+  text = text.replace(/__(.+?)__/g, function (_, inner) { changed = true; return inner; });
+
+  // Strip single-asterisk emphasis *word* but NOT wildcards (keep inner)
+  text = text.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, function (_, pre, inner) { changed = true; return pre + inner; });
+
+  // Remove bullet markers at the start of lines ("- ", "* ", "• ")
+  text = text.replace(/^\s*[-*•]\s+/gm, function () { changed = true; return ""; });
+
+  // Remove numbered-list markers at the start of lines ("1. ", "2) ", ...)
+  text = text.replace(/^\s*\d+[.)]\s+/gm, function () { changed = true; return ""; });
+
+  // Collapse multiple blank lines
+  text = text.replace(/\n{3,}/g, "\n\n");
+
+  // Trim edges
+  text = text.trim();
+
+  return { text: text, changed: changed };
+}
+
 module.exports = {
   checkSolutionLeak, getStrongerInstruction,
   checkFalseConfirmation, getFalseConfirmationInstruction,
@@ -518,4 +552,5 @@ module.exports = {
   redactStateRevealSentence,
   extractElementMentions,
   loadConceptPatternsFromKG,
+  enforceDatasetStyle,
 };

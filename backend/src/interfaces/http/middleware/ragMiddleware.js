@@ -9,7 +9,7 @@ const fs = require("fs");
 const path = require("path");
 const config = require("../../../infrastructure/llm/config");
 const { runFullPipeline } = require("../../../domain/services/rag/ragPipeline");
-const { checkSolutionLeak, getStrongerInstruction, checkFalseConfirmation, getFalseConfirmationInstruction, checkPrematureConfirmation, getPartialConfirmationInstruction, checkStateReveal, getStateRevealInstruction, checkElementNaming, removeOpeningConfirmation, redactElementMentions, redactStateRevealSentence, loadConceptPatternsFromKG } = require("../../../domain/services/rag/guardrails");
+const { checkSolutionLeak, getStrongerInstruction, checkFalseConfirmation, getFalseConfirmationInstruction, checkPrematureConfirmation, getPartialConfirmationInstruction, checkStateReveal, getStateRevealInstruction, checkElementNaming, removeOpeningConfirmation, redactElementMentions, redactStateRevealSentence, loadConceptPatternsFromKG, enforceDatasetStyle } = require("../../../domain/services/rag/guardrails");
 const { loadKG, getAllEntries } = require("../../../infrastructure/search/knowledgeGraph");
 const { loadIndex } = require("../../../infrastructure/search/bm25");
 const { logInteraction } = require("../../../infrastructure/llm/logger");
@@ -865,6 +865,17 @@ router.post("/chat/stream", async function (req, res, next) {
             guardrailTriggered = true;
           }
         }
+      }
+
+      // 11e-bis. Enforce dataset style: strip markdown (bullets, bold,
+      // numbered lists, headings) so the tutor output matches the concise
+      // prose + one final question style of the training dataset.
+      var styleResult = enforceDatasetStyle(fullResponse);
+      if (styleResult && styleResult.changed) {
+        console.log("[RAG] Dataset-style filter removed markdown formatting");
+        emitEvent("guardrail_style", "end", { before: fullResponse, after: styleResult.text });
+        fullResponse = styleResult.text;
+        guardrailTriggered = true;
       }
 
       // 11f. Pedagogical safeguard: never allow <FIN_EJERCICIO> unless the
