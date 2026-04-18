@@ -23,6 +23,13 @@ param(
     [int]   $ChromaPort    = 8000,
     [int]   $PgPort        = 5432,
 
+    # Chroma launcher (se autodetecta si se deja vacio).
+    # Ejemplos validos:
+    #   "chroma"                                          (si esta en PATH)
+    #   "py -3.12 -m chromadb.cli.cli"                    (via py launcher)
+    #   "C:\Users\admin\AppData\Roaming\Python\Python312\Scripts\chroma.exe"
+    [string]$ChromaCmd = "",
+
     # Conexion Postgres que se escribira en .env si falta.
     # Cambia el password y el nombre de la BD segun tu instalacion.
     [string]$PgConnectionString = "postgresql://postgres:CHANGEME@127.0.0.1:5432/tutorvirtual"
@@ -118,13 +125,46 @@ try {
     Ok "Node.js $nodeV"
 } catch { Err "Node.js no encontrado en PATH"; exit 1 }
 
-# Chroma CLI
-$chromaCmd = Get-Command chroma -ErrorAction SilentlyContinue
-if (-not $chromaCmd) {
-    Err "Comando 'chroma' no encontrado en PATH. Instala con: pip install chromadb"
+# Chroma launcher (autodetect si no se paso -ChromaCmd)
+function Resolve-ChromaLauncher {
+    # 1) Parametro explicito
+    if ($ChromaCmd) { return $ChromaCmd }
+
+    # 2) chroma en PATH
+    $g = Get-Command chroma -ErrorAction SilentlyContinue
+    if ($g) { return $g.Source }
+
+    # 3) Rutas tipicas de pip install --user para varias versiones de Python
+    $candidates = @(
+        "$env:APPDATA\Python\Python312\Scripts\chroma.exe",
+        "$env:APPDATA\Python\Python313\Scripts\chroma.exe",
+        "$env:APPDATA\Python\Python311\Scripts\chroma.exe",
+        "$env:LOCALAPPDATA\Programs\Python\Python312\Scripts\chroma.exe",
+        "$env:LOCALAPPDATA\Programs\Python\Python311\Scripts\chroma.exe"
+    )
+    foreach ($c in $candidates) {
+        if (Test-Path $c) { return $c }
+    }
+
+    # 4) py launcher + modulo chromadb en 3.12
+    $py = Get-Command py -ErrorAction SilentlyContinue
+    if ($py) {
+        $check = & py -3.12 -c "import chromadb; print('ok')" 2>$null
+        if ($check -eq "ok") { return "py -3.12 -m chromadb.cli.cli" }
+        $check = & py -3 -c "import chromadb; print('ok')" 2>$null
+        if ($check -eq "ok") { return "py -3 -m chromadb.cli.cli" }
+    }
+
+    return $null
+}
+
+$chromaLauncher = Resolve-ChromaLauncher
+if (-not $chromaLauncher) {
+    Err "No se pudo encontrar chroma. Instala con: py -3.12 -m pip install chromadb"
+    Err "O pasa el launcher con -ChromaCmd 'C:\ruta\a\chroma.exe'"
     exit 1
 }
-Ok "chroma CLI en $($chromaCmd.Source)"
+Ok "Chroma launcher: $chromaLauncher"
 
 # Servicio Postgres
 $pgSvc = Get-Service -Name $PgServiceName -ErrorAction SilentlyContinue
@@ -213,7 +253,14 @@ Info "=== 2/4 ChromaDB ==="
 if (Test-Port "127.0.0.1" $ChromaPort) {
     Warn "Puerto $ChromaPort ya en uso. Asumo que Chroma ya esta corriendo."
 } else {
-    $chromaCmdLine = "chroma run --host 127.0.0.1 --port $ChromaPort --path `"$ChromaDir`""
+    # Si el launcher contiene un .exe con espacios o es un comando compuesto,
+    # respetamos el string tal cual. Si es una ruta a exe, la envolvemos en comillas.
+    if ($chromaLauncher -match '\.exe$' -and $chromaLauncher -notmatch '^".*"$') {
+        $launcherPart = "& `"$chromaLauncher`""
+    } else {
+        $launcherPart = $chromaLauncher
+    }
+    $chromaCmdLine = "$launcherPart run --host 127.0.0.1 --port $ChromaPort --path `"$ChromaDir`""
     Info "Lanzando en ventana nueva: $chromaCmdLine"
     Start-Process -FilePath "powershell.exe" `
         -ArgumentList "-NoExit", "-Command", "`$Host.UI.RawUI.WindowTitle='ChromaDB :$ChromaPort'; Set-Location `"$ProjectRoot`"; $chromaCmdLine" `
