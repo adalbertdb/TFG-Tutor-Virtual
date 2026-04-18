@@ -333,7 +333,7 @@ export default function Interacciones() {
     async (ejercicios) => {
       if (!userId) return;
       try {
-        const res = await api.get(`/api/interacciones/user/${userId}`);
+        const res = await api.get(`/api/interacciones/mine`);
         const lista = Array.isArray(res.data) ? res.data : [];
 
         const withDetails = lista.map((it) => {
@@ -548,7 +548,7 @@ export default function Interacciones() {
 
       try {
         await api.post("/api/resultados/finalizar", {
-          userId,
+          // userId is derived from session on the server (NOT sent from client)
           exerciseId,
           interaccionId,
           resueltoALaPrimera,
@@ -616,7 +616,7 @@ export default function Interacciones() {
     try {
       await enviarMensajeStream({
         payload: {
-          userId,
+          // userId is derived from session on the server (NOT sent from client)
           exerciseId: ej._id,
           interaccionId: currentInteraccionId || undefined,
           llmMode: "upv",

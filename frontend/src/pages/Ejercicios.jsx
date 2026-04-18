@@ -100,27 +100,13 @@ export default function EjerciciosPage() {
           return;
         }
 
-        // ✅ Fallback de rutas (porque ahora mismo te da 404 en /completed)
-        const candidates = [
-          `/api/resultados/completed/${userId}`,
-          `/api/resultados/completados/${userId}`,
-          `/api/resultados/completed?userId=${userId}`,
-          `/api/resultados/completados?userId=${userId}`,
-        ];
-
+        // userId from session on server (not sent from client)
         let completedData = null;
-        for (const url of candidates) {
-          try {
-            const r = await api.get(url, { signal: ctrl.signal });
-            completedData = r.data;
-            break;
-          } catch (e) {
-            // si es 404, probamos la siguiente; si es otra cosa, también probamos pero sin romper
-          }
-        }
-
-        if (!completedData) {
-          // No hay endpoint válido ahora mismo -> sin ticks, pero la pantalla funciona
+        try {
+          const r = await api.get(`/api/resultados/completed`, { signal: ctrl.signal });
+          completedData = r.data;
+        } catch (e) {
+          // Endpoint failed -> no ticks, but screen still works
           setCompletedIds(new Set());
           return;
         }

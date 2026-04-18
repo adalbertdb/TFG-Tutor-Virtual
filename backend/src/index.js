@@ -14,21 +14,33 @@ const fs = require("fs");
 
 
 
-const userRoutes = require("./routes/usuarios");
-const ejerciciosRoutes = require("./routes/ejercicios");
-const interaccionesRoutes = require("./routes/interacciones");
-const ollamaChatRoutes = require("./routes/ollamaChatRoutes");
-const ragMiddleware = require("./rag/ragMiddleware");
-const { setupWorkflowSocket } = require("./rag/workflowSocket");
-const resultadoRoutes = require("./routes/resultados");
-const progresoRoutes = require("./routes/progresoRoutes");
-const exportRoutes = require("./routes/exportRoutes");
+const userRoutes = require("./interfaces/http/routes/usuarios");
+const ejerciciosRoutes = require("./interfaces/http/routes/ejercicios");
+const interaccionesRoutes = require("./interfaces/http/routes/interacciones");
+const ollamaChatRoutes = require("./interfaces/http/routes/ollamaChatRoutes");
+const ragMiddleware = require("./interfaces/http/middleware/ragMiddleware");
+const { setupWorkflowSocket } = require("./interfaces/sse/workflowSocket");
+const resultadoRoutes = require("./interfaces/http/routes/resultados");
+const progresoRoutes = require("./interfaces/http/routes/progresoRoutes");
+const exportRoutes = require("./interfaces/http/routes/exportRoutes");
 
 // Auth (CAS + demo)
-const { router: authRouter, requireAuth } = require("./authRoutes");
+const { router: authRouter, requireAuth } = require("./interfaces/http/routes/auth");
+const { globalAuth, requireRole } = require("./interfaces/http/middleware/authMiddleware");
 
 const app = express();
 console.log("✅ BACKEND INDEX CARGADO:", __filename);
+
+// ====== SAFEGUARD: DEV_BYPASS_AUTH in production ======
+if (
+  process.env.DEV_BYPASS_AUTH === "true" &&
+  process.env.NODE_ENV === "production"
+) {
+  console.error(
+    "CRITICAL: DEV_BYPASS_AUTH is enabled in production. Refusing to start."
+  );
+  process.exit(1);
+}
 
 const port = Number(process.env.PORT || 3000);
 
@@ -102,6 +114,11 @@ app.get("/api/health", (_req, res) => res.json({ ok: true }));
 
 // ====== Auth ======
 app.use(authRouter);
+
+// ====== Global Auth Middleware (BEFORE all API routes) ======
+// Rejects unauthenticated requests to all /api/* except whitelisted public routes.
+// Sets req.userId and req.userRole from session (NEVER from client).
+app.use("/api", globalAuth);
 
 // ====== API ======
 app.use("/api/usuarios", userRoutes);
