@@ -18,7 +18,7 @@ param(
     # --- Rutas / servicios (editar si cambian en el servidor) ---
     [string]$ProjectRoot   = "C:\Users\admin\TutorVirtual_Irene",
     [string]$NginxDir      = "C:\nginx-1.28.1",
-    [string]$PgServiceName = "postgresql-x64-16",
+    [string]$PgServiceName = "postgresql-x64-18",
     [int]   $BackendPort   = 3001,
     [int]   $ChromaPort    = 8000,
     [int]   $PgPort        = 5432,
