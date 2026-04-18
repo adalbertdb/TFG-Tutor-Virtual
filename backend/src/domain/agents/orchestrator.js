@@ -6,12 +6,13 @@ const AgentContext = require("./base/AgentContext");
  * TutoringOrchestrator: Coordinates the agent pipeline for each tutoring interaction.
  *
  * Pipeline stages (each may be skipped based on context):
- * 1. CONTEXT  → Load exercise, history, language, loop state
- * 2. CLASSIFY → Classify student message
- * 3. RETRIEVE → RAG retrieval (BM25 + semantic + KG)
- * 4. TUTOR    → Build prompt + call LLM
- * 5. GUARDRAIL → Validate response safety
- * 6. PERSIST  → Save messages + log
+ * 1. CONTEXT         → Load exercise, history, language, loop state
+ * 2. INPUT GUARDRAIL → Block prompt injection / off-topic BEFORE the LLM
+ * 3. CLASSIFY        → Classify student message
+ * 4. RETRIEVE        → RAG retrieval (BM25 + semantic + KG)
+ * 5. TUTOR           → Build prompt + call LLM
+ * 6. GUARDRAIL (out) → Validate response safety
+ * 7. PERSIST         → Save messages + log
  *
  * Returns an AgentContext with the final response and metadata.
  */
@@ -53,7 +54,24 @@ class TutoringOrchestrator {
 
       if (ctx.fallthrough) return ctx;
 
-      // Stage 2: Classify
+      // Stage 2: Input guardrail (prompt injection / off-topic)
+      this.emitEvent("agent_start", "input_guardrail", {
+        agent: "inputGuardrailAgent",
+      });
+      await this.agents.inputGuardrail.execute(ctx);
+      this.emitEvent("agent_end", "input_guardrail", {
+        agent: "inputGuardrailAgent",
+        blocked: ctx.inputBlocked,
+        category: ctx.inputSecurity?.category,
+      });
+
+      if (ctx.inputBlocked) {
+        ctx.timing.pipelineMs = Date.now() - ctx.timing.pipelineStartMs;
+        await this.agents.persistence.execute(ctx);
+        return ctx;
+      }
+
+      // Stage 3: Classify
       this.emitEvent("agent_start", "classify", { agent: "classifierAgent" });
       await this.agents.classifier.execute(ctx);
       this.emitEvent("agent_end", "classify", {
@@ -127,40 +145,33 @@ class TutoringOrchestrator {
   }
 
   /**
-   * Check if the exercise should be finished deterministically
-   * (student has correct answer + good reasoning + enough history).
+   * Check if the exercise should be finished deterministically.
+   * We ONLY finish when the student has shown good reasoning — never on
+   * "correct_no_reasoning" or "correct_wrong_reasoning" alone, even after
+   * many turns. This enforces "justify before validating" pedagogically.
    */
   _shouldFinishDeterministically(ctx) {
     const cls = ctx.classification?.type;
-    const { prevCorrectTurns, totalAssistantTurns } = ctx.loopState;
+    const { prevCorrectTurns } = ctx.loopState;
 
-    // If correct with good reasoning and has been through enough turns
-    if (cls === "correct_good_reasoning" && prevCorrectTurns >= 1) {
-      return true;
-    }
-
-    // If correct (any type) and has been through many turns
-    if (
-      (cls === "correct_no_reasoning" ||
-        cls === "correct_wrong_reasoning" ||
-        cls === "correct_good_reasoning") &&
-      totalAssistantTurns >= 8
-    ) {
-      return true;
-    }
-
-    return false;
+    return cls === "correct_good_reasoning" && prevCorrectTurns >= 1;
   }
 
+  /**
+   * Closure message: congratulate, ask for remaining doubts, and mark
+   * <FIN_EJERCICIO> so the frontend closes the session. The student can
+   * still ask follow-up questions in the same chat; those are re-evaluated
+   * by the pipeline on the next turn.
+   */
   _buildFinishMessage(ctx) {
     const lang = ctx.lang;
     if (lang === "en") {
-      return "Excellent work! You've correctly identified the answer and shown good reasoning. <FIN_EJERCICIO>";
+      return "Excellent work! You've correctly identified the answer and justified it well. Before we close: do you have any remaining doubts about this circuit or the concepts involved? <FIN_EJERCICIO>";
     }
     if (lang === "val") {
-      return "Excel·lent treball! Has identificat correctament la resposta i has mostrat un bon raonament. <FIN_EJERCICIO>";
+      return "Excel·lent treball! Has identificat correctament la resposta i l'has justificat bé. Abans de tancar: tens algun dubte pendent sobre aquest circuit o els conceptes implicats? <FIN_EJERCICIO>";
     }
-    return "¡Excelente trabajo! Has identificado correctamente la respuesta y has mostrado un buen razonamiento. <FIN_EJERCICIO>";
+    return "¡Excelente trabajo! Has identificado correctamente la respuesta y la has justificado bien. Antes de cerrar: ¿te queda alguna duda sobre este circuito o los conceptos implicados? <FIN_EJERCICIO>";
   }
 }
 

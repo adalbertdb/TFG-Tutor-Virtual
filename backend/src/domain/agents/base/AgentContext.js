@@ -35,6 +35,10 @@ class AgentContext {
       studentFrustrated: false,
     };
 
+    // --- Populated by InputGuardrailAgent ---
+    this.inputSecurity = { safe: true, category: "safe", matchedPattern: null };
+    this.inputBlocked = false;
+
     // --- Populated by ClassifierAgent ---
     this.classification = null;
 

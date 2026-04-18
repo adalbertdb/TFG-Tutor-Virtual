@@ -23,6 +23,9 @@ const container = {
   messageRepo: null,
   resultadoRepo: null,
 
+  // Domain services (ports)
+  securityService: null,
+
   // Agent system
   orchestrator: null,
 
@@ -41,6 +44,10 @@ const container = {
     } else {
       throw new Error(`Unknown DATABASE_TYPE: ${dbType}`);
     }
+
+    // DB-independent adapters
+    const HeuristicSecurityAdapter = require("./infrastructure/security/HeuristicSecurityAdapter");
+    this.securityService = new HeuristicSecurityAdapter();
 
     this._initialized = true;
     console.log("[Container] Initialization complete");

@@ -9,7 +9,7 @@ const fs = require("fs");
 const path = require("path");
 const config = require("../../../infrastructure/llm/config");
 const { runFullPipeline } = require("../../../domain/services/rag/ragPipeline");
-const { checkSolutionLeak, getStrongerInstruction, checkFalseConfirmation, getFalseConfirmationInstruction, checkPrematureConfirmation, getPartialConfirmationInstruction, checkStateReveal, getStateRevealInstruction, checkElementNaming, removeOpeningConfirmation } = require("../../../domain/services/rag/guardrails");
+const { checkSolutionLeak, getStrongerInstruction, checkFalseConfirmation, getFalseConfirmationInstruction, checkPrematureConfirmation, getPartialConfirmationInstruction, checkStateReveal, getStateRevealInstruction, checkElementNaming, removeOpeningConfirmation, redactElementMentions } = require("../../../domain/services/rag/guardrails");
 const { loadKG } = require("../../../infrastructure/search/knowledgeGraph");
 const { loadIndex } = require("../../../infrastructure/search/bm25");
 const { logInteraction } = require("../../../infrastructure/llm/logger");
@@ -18,6 +18,13 @@ const { buildTutorSystemPrompt } = require("../../../domain/services/promptBuild
 const { resolveLanguage, getFinishMessages, getElementNamingInstruction, getRandomIntermediatePhrase, getAllPatterns, frustrationPatterns: frustrationDict } = require("../../../domain/services/languageManager");
 const Ejercicio = require("../../../infrastructure/persistence/mongodb/models/ejercicio");
 const Interaccion = require("../../../infrastructure/persistence/mongodb/models/interaccion");
+const HeuristicSecurityAdapter = require("../../../infrastructure/security/HeuristicSecurityAdapter");
+
+const securityService = new HeuristicSecurityAdapter({
+  logger: function (event, payload) {
+    emitEvent(event, "end", payload);
+  },
+});
 
 let requestCounter = 0;
 
@@ -392,6 +399,92 @@ router.post("/chat/stream", async function (req, res, next) {
       earlyLang = resolveLanguage(earlyHistory);
     }
 
+    // 2b. Input guardrail: block prompt injection / off-topic BEFORE the LLM
+    var securityResult = securityService.analyzeInput(userMessage.trim(), {
+      lang: earlyLang,
+      ejercicio: ejercicio,
+      evaluableElements: evaluableElements,
+    });
+    if (!securityResult.safe) {
+      emitEvent("security_block", "end", {
+        category: securityResult.category,
+        matchedPattern: securityResult.matchedPattern,
+        userMessage: userMessage.trim(),
+      });
+
+      // Open SSE and answer with the redirect, persisting both user + assistant msgs
+      res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+      res.setHeader("Cache-Control", "no-cache, no-transform");
+      res.setHeader("Connection", "keep-alive");
+      res.setHeader("X-Accel-Buffering", "no");
+      if (typeof res.flushHeaders === "function") res.flushHeaders();
+      res.write(": ok\n\n");
+
+      var hbBlock = setInterval(function () {
+        res.write(": ping\n\n");
+        if (typeof res.flush === "function") res.flush();
+      }, 15000);
+
+      try {
+        var iidBlock = interaccionId || null;
+        if (iidBlock) {
+          var existsB = await Interaccion.exists({ _id: iidBlock, usuario_id: userId });
+          if (!existsB) iidBlock = null;
+        }
+        if (iidBlock == null) {
+          var createdB = await Interaccion.create({
+            usuario_id: userId,
+            ejercicio_id: exerciseId,
+            inicio: new Date(),
+            fin: new Date(),
+            conversacion: [],
+          });
+          iidBlock = createdB._id.toString();
+          sseSend(res, { interaccionId: iidBlock });
+        }
+
+        await Interaccion.updateOne(
+          { _id: iidBlock },
+          {
+            $push: {
+              conversacion: {
+                $each: [
+                  { role: "user", content: userMessage.trim() },
+                  {
+                    role: "assistant",
+                    content: securityResult.redirectMessage,
+                    metadata: {
+                      blockedByInputGuardrail: true,
+                      category: securityResult.category,
+                      matchedPattern: securityResult.matchedPattern,
+                    },
+                  },
+                ],
+              },
+              $set: { fin: new Date() },
+            }
+          }
+        );
+
+        sseSend(res, { chunk: securityResult.redirectMessage });
+        endSSE(res, hbBlock);
+
+        emitEvent("request_end", "end", {
+          totalTimeMs: Date.now() - startTime,
+          blockedByInputGuardrail: true,
+          category: securityResult.category,
+        });
+      } catch (blockErr) {
+        clearInterval(hbBlock);
+        console.error("[RAG] Input guardrail error:", blockErr.message);
+        sseSend(res, { error: "Error en el sistema RAG." });
+        res.write("data: [DONE]\n\n");
+        if (typeof res.flush === "function") res.flush();
+        res.end();
+      }
+      return;
+    }
+
     // 3. Run RAG pipeline (with generic evaluable elements and language)
     emitEvent("pipeline_start", "start", { userMessage: userMessage.trim(), exerciseNum: searchNum, correctAnswer: correctAnswer, userId: userId, evaluableElements: evaluableElements });
     var pipelineStart = Date.now();
@@ -464,16 +557,20 @@ router.post("/chat/stream", async function (req, res, next) {
         || ragResult.classification === "correct_no_reasoning"
         || ragResult.classification === "correct_wrong_reasoning";
 
-      // 7a. Loop detection: if the student has given correct/partial answers before, don't keep looping
+      // 7a. Pedagogical rule: we NEVER close an exercise without real justification.
+      // If the student keeps giving the right elements but no reasoning, we do NOT
+      // override the classification. Instead, we raise a flag that will inject a
+      // strong instruction into the tutor prompt (see section 8 below) demanding
+      // that the student explicitly justify WHY, using concepts from the KG
+      // (cortocircuito, circuito abierto, divisor de tension, etc.).
       var repetitionInfo = await detectTutorRepetition(iid);
+      var demandJustification = false;
+      var prevCorrectCount = 0;
       if (isCorrect && ragResult.classification !== "correct_good_reasoning") {
-        var prevCorrectCount = await countPreviousCorrectTurns(iid);
-        // Lower threshold from 2 to 1 when tutor repetition is detected
-        var loopThreshold = repetitionInfo.repeating ? 1 : 2;
-        if (prevCorrectCount >= loopThreshold) {
-          console.log("[RAG] Loop detection: " + prevCorrectCount + " previous correct turns (threshold=" + loopThreshold + "), overriding " + ragResult.classification + " → correct_good_reasoning");
-          ragResult.classification = "correct_good_reasoning";
-          isCorrect = true;
+        prevCorrectCount = await countPreviousCorrectTurns(iid);
+        if (prevCorrectCount >= 1) {
+          demandJustification = true;
+          console.log("[RAG] Student has given correct answer " + prevCorrectCount + " times without reasoning; demanding justification");
         }
       }
 
@@ -565,7 +662,21 @@ router.post("/chat/stream", async function (req, res, next) {
           + "3. If something is still missing, give a more concrete hint before asking.\n"
           + "Be empathetic and brief.\n\n";
       }
-      var augmentedPrompt = basePrompt + "\n\n" + progressHint + repetitionHint + frustrationHint + stuckHint + ragResult.augmentation;
+      // Demand justification hint: when the student has given correct elements
+      // multiple times but never justified, force the tutor to ask explicitly.
+      var justificationHint = "";
+      if (demandJustification) {
+        justificationHint = "[DEMAND JUSTIFICATION]\n"
+          + "CRITICAL: The student has given the CORRECT answer " + prevCorrectCount + " time(s) WITHOUT any justification, or with INCORRECT reasoning.\n"
+          + "You MUST NOT accept the answer as final. You MUST NOT emit <FIN_EJERCICIO>.\n"
+          + "Your ONLY task this turn is:\n"
+          + "1. Briefly acknowledge that they have the right elements.\n"
+          + "2. Ask DIRECTLY and CLEARLY: 'Explica por que' / 'Explain why' / 'Explica per que', requiring them to use a concept such as cortocircuito, circuito abierto, divisor de tension, ley de Ohm, Kirchhoff, etc.\n"
+          + "3. Do NOT name the correct elements in your question. Use generic wording like 'esos elementos' / 'those elements'.\n"
+          + "4. Do NOT provide the reasoning yourself. The student must produce it.\n\n";
+      }
+
+      var augmentedPrompt = basePrompt + "\n\n" + progressHint + repetitionHint + frustrationHint + stuckHint + justificationHint + ragResult.augmentation;
       emitEvent("prompt_built", "end", { systemPromptLength: basePrompt.length, ragAugmentationLength: ragResult.augmentation.length, totalPromptLength: augmentedPrompt.length, augmentationPreview: ragResult.augmentation });
 
       // 9. Load conversation history (last N messages)
@@ -585,13 +696,13 @@ router.post("/chat/stream", async function (req, res, next) {
       // 11. Guardrail checks: solution leak + false confirmation
       var guardrailTriggered = false;
 
-      // 11a. Check if the LLM revealed the solution
+      // 11a. Check if the LLM revealed the solution (iterative: up to 2 retries)
       var leakCheck = checkSolutionLeak(fullResponse, correctAnswer);
       emitEvent("guardrail_leak", "end", { responsePreview: fullResponse, correctAnswer: correctAnswer, result: leakCheck, passed: !leakCheck.leaked, check: "Checks if LLM response reveals the correct answer resistances" });
-      if (leakCheck.leaked) {
+      for (var leakAttempt = 1; leakAttempt <= 2 && leakCheck.leaked; leakAttempt++) {
         guardrailTriggered = true;
-        console.log("[RAG] Guardrail triggered (leak): " + leakCheck.details);
-        emitEvent("ollama_retry", "start", { reason: "solution_leak", retryCount: 1 });
+        console.log("[RAG] Guardrail triggered (leak) attempt " + leakAttempt + ": " + leakCheck.details);
+        emitEvent("ollama_retry", "start", { reason: "solution_leak", retryCount: leakAttempt });
 
         var strongerPrompt = augmentedPrompt + getStrongerInstruction(lang);
         var retryMessages = [{ role: "system", content: strongerPrompt }];
@@ -600,6 +711,7 @@ router.post("/chat/stream", async function (req, res, next) {
         }
         fullResponse = await callOllama(retryMessages);
         emitEvent("ollama_retry", "end", { reason: "solution_leak", responseLength: fullResponse.length });
+        leakCheck = checkSolutionLeak(fullResponse, correctAnswer);
       }
 
       // 11b. Check if the LLM confirmed a wrong answer as correct
@@ -654,12 +766,13 @@ router.post("/chat/stream", async function (req, res, next) {
       }
 
       // 11d. Check if the LLM names specific evaluable elements in questions/directives
+      // Iterative: up to 2 retries. Final fallback: deterministic redaction.
       var namingCheck = checkElementNaming(fullResponse, evaluableElements);
       emitEvent("guardrail_element_naming", "end", { responsePreview: fullResponse, result: namingCheck, passed: !namingCheck.named, check: "Checks if LLM names specific elements in questions or directives" });
-      if (namingCheck.named) {
+      for (var namingAttempt = 1; namingAttempt <= 2 && namingCheck.named; namingAttempt++) {
         guardrailTriggered = true;
-        console.log("[RAG] Guardrail triggered (element naming): " + namingCheck.details);
-        emitEvent("ollama_retry", "start", { reason: "element_naming", retryCount: 1 });
+        console.log("[RAG] Guardrail triggered (element naming) attempt " + namingAttempt + ": " + namingCheck.details);
+        emitEvent("ollama_retry", "start", { reason: "element_naming", retryCount: namingAttempt });
 
         var namingPrompt = augmentedPrompt + getElementNamingInstruction(lang);
         var namingRetry = [{ role: "system", content: namingPrompt }];
@@ -668,6 +781,34 @@ router.post("/chat/stream", async function (req, res, next) {
         }
         fullResponse = await callOllama(namingRetry);
         emitEvent("ollama_retry", "end", { reason: "element_naming", responseLength: fullResponse.length });
+        namingCheck = checkElementNaming(fullResponse, evaluableElements);
+      }
+
+      // 11d-bis. Deterministic redaction fallback: if after the retries the
+      // response STILL names correct elements in questions/directives, rewrite
+      // them with a generic placeholder. Prefer clunky-but-safe over leaking.
+      if (namingCheck.named) {
+        var redactResult = redactElementMentions(fullResponse, correctAnswer, lang);
+        if (redactResult.redacted) {
+          guardrailTriggered = true;
+          console.log("[RAG] Deterministic redaction applied (element naming could not be fixed by LLM)");
+          emitEvent("guardrail_redaction", "end", { reason: "element_naming_fallback", before: fullResponse, after: redactResult.text });
+          fullResponse = redactResult.text;
+        }
+      }
+
+      // 11d-ter. Extra safety: if the response still literally contains ALL
+      // correct elements together (e.g. "R1, R2, R4") redact them even when
+      // they appear outside a question — this catches leaks in statements.
+      var finalLeak = checkSolutionLeak(fullResponse, correctAnswer);
+      if (finalLeak.leaked) {
+        var redactResult2 = redactElementMentions(fullResponse, correctAnswer, lang);
+        if (redactResult2.redacted) {
+          guardrailTriggered = true;
+          console.log("[RAG] Deterministic redaction applied (final leak safeguard)");
+          emitEvent("guardrail_redaction", "end", { reason: "final_leak_safeguard", before: fullResponse, after: redactResult2.text });
+          fullResponse = redactResult2.text;
+        }
       }
 
       // 11e. Deterministic prefix fallback: if after all retries the response STILL
@@ -700,6 +841,16 @@ router.post("/chat/stream", async function (req, res, next) {
             guardrailTriggered = true;
           }
         }
+      }
+
+      // 11f. Pedagogical safeguard: never allow <FIN_EJERCICIO> unless the
+      // classification is correct_good_reasoning. Strips the token (and any
+      // partial prefix) if the LLM tried to close without real justification.
+      if (ragResult.classification !== "correct_good_reasoning" && fullResponse.includes(FIN_TOKEN)) {
+        console.log("[RAG] Stripping FIN_EJERCICIO token: classification=" + ragResult.classification + " (closure requires correct_good_reasoning)");
+        fullResponse = fullResponse.replaceAll(FIN_TOKEN, "").trimEnd();
+        guardrailTriggered = true;
+        emitEvent("guardrail_fin_stripped", "end", { classification: ragResult.classification });
       }
 
       // 12. Send response to client as SSE

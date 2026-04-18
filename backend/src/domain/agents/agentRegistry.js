@@ -1,6 +1,7 @@
 "use strict";
 
 const ContextAgent = require("./contextAgent");
+const InputGuardrailAgent = require("./inputGuardrailAgent");
 const ClassifierAgent = require("./classifierAgent");
 const RetrievalAgent = require("./retrievalAgent");
 const TutorAgent = require("./tutorAgent");
@@ -24,6 +25,7 @@ const PersistenceAgent = require("./persistenceAgent");
  * @param {Function} deps.classifyQuery
  * @param {Function} deps.runFullPipeline
  * @param {object} deps.guardrails
+ * @param {object} deps.securityService - ISecurityService adapter
  * @param {Function} deps.buildSystemPrompt
  * @param {Function} [deps.logInteraction]
  * @param {Function} [deps.emitEvent]
@@ -36,6 +38,10 @@ function createAgentRegistry(deps) {
       interaccionRepo: deps.interaccionRepo,
       messageRepo: deps.messageRepo,
       config: deps.config,
+    }),
+
+    inputGuardrail: new InputGuardrailAgent({
+      securityService: deps.securityService,
     }),
 
     classifier: new ClassifierAgent({

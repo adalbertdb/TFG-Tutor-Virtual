@@ -343,10 +343,80 @@ function removeOpeningConfirmation(response, lang) {
   return result || response;
 }
 
+// Deterministic last-resort redaction: if after retries the response still
+// names correct elements in questions/directives, rewrite those mentions to a
+// generic placeholder. Prefers a clunky-but-safe message over a leak.
+function redactElementMentions(response, correctAnswer, lang) {
+  if (!Array.isArray(correctAnswer) || correctAnswer.length === 0) {
+    return { text: response, redacted: false };
+  }
+
+  var placeholders = {
+    es: "ese conjunto de elementos",
+    val: "eixe conjunt d'elements",
+    en: "that set of elements",
+  };
+  var placeholder = placeholders[lang] || placeholders.es;
+
+  var text = response;
+  var changed = false;
+
+  // 1) Replace comma-separated lists like "(R1, R2, R4)" / "R1, R2 y R4" / "R1, R2 and R4"
+  var joined = correctAnswer.slice().map(function (r) {
+    return r.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  });
+  var listPattern = new RegExp(
+    "\\(?\\s*" + joined.join("\\s*[,;y]\\s*|\\s*(?:y|i|and)\\s*") + "\\s*\\)?",
+    "gi"
+  );
+  // simpler & more tolerant pattern: "R1, R2 y R4" (es) / "i" (val) / "and" (en) / commas
+  var tolerantPattern = new RegExp(
+    "\\(?\\s*" + joined[0] +
+      joined.slice(1).map(function (r) {
+        return "\\s*(?:,|;|y|i|and)\\s*" + r;
+      }).join("") +
+      "\\s*\\)?",
+    "gi"
+  );
+  if (tolerantPattern.test(text)) {
+    text = text.replace(tolerantPattern, placeholder);
+    changed = true;
+  }
+
+  // 2) Replace any remaining individual mention of a correct element inside
+  //    a question or directive sentence.
+  var sentences = text.split(/(?<=[.!?\n])\s*/);
+  for (var i = 0; i < sentences.length; i++) {
+    var sent = sentences[i];
+    var isQuestion = sent.includes("?") || sent.includes("¿");
+    var isDirective = false;
+    for (var d = 0; d < directivePatterns.length; d++) {
+      if (directivePatterns[d].test(sent)) { isDirective = true; break; }
+    }
+    if (!isQuestion && !isDirective) continue;
+
+    var newSent = sent;
+    for (var j = 0; j < correctAnswer.length; j++) {
+      var elem = correctAnswer[j];
+      var safe = elem.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      var re = new RegExp("\\b" + safe + "\\b", "gi");
+      if (re.test(newSent)) {
+        newSent = newSent.replace(re, placeholder);
+        changed = true;
+      }
+    }
+    sentences[i] = newSent;
+  }
+  text = sentences.join("");
+
+  return { text: text, redacted: changed };
+}
+
 module.exports = {
   checkSolutionLeak, getStrongerInstruction,
   checkFalseConfirmation, getFalseConfirmationInstruction,
   checkPrematureConfirmation, getPartialConfirmationInstruction,
   checkStateReveal, getStateRevealInstruction,
   checkElementNaming, removeOpeningConfirmation,
+  redactElementMentions,
 };
