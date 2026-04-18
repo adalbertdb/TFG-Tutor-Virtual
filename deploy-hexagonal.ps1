@@ -16,7 +16,7 @@ param(
     [switch]$StopAll,
 
     # --- Rutas / servicios (editar si cambian en el servidor) ---
-    [string]$ProjectRoot   = "C:\Users\admin\TutorVirtual",
+    [string]$ProjectRoot   = "C:\Users\admin\TutorVirtual_Irene",
     [string]$NginxDir      = "C:\nginx-1.28.1",
     [string]$PgServiceName = "postgresql-x64-16",
     [int]   $BackendPort   = 3001,
