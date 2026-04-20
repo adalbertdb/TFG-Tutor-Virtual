@@ -358,10 +358,17 @@ function endSSE(res, hb) {
   res.end();
 }
 
+// Helper: ALWAYS-ON log for when RAG middleware falls through. This is critical for debugging
+// and should never be gated behind DEBUG_PIPELINE.
+function logFallthrough(reason, details) {
+  console.log("[RAG_SKIP] ⛔ reason=" + reason + (details ? " " + JSON.stringify(details) : ""));
+}
+
 // Middleware: intercepts POST /chat/stream
 router.post("/chat/stream", async function (req, res, next) {
   // Skip if RAG is disabled or not initialized
   if (!config.RAG_ENABLED || !ragReady) {
+    logFallthrough("rag_disabled_or_not_ready", { RAG_ENABLED: config.RAG_ENABLED, ragReady: ragReady });
     trace.traceRagGate("", "rag_disabled_or_not_ready", { RAG_ENABLED: config.RAG_ENABLED, ragReady: ragReady });
     return next();
   }
@@ -385,14 +392,17 @@ router.post("/chat/stream", async function (req, res, next) {
     var interaccionId = req.body.interaccionId;
 
     if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
+      logFallthrough("invalid_userId", { userId: userId });
       trace.traceRagGate(reqId, "invalid_userId", { userId: userId });
       return next();
     }
     if (!exerciseId || !mongoose.Types.ObjectId.isValid(exerciseId)) {
+      logFallthrough("invalid_exerciseId", { exerciseId: exerciseId });
       trace.traceRagGate(reqId, "invalid_exerciseId", { exerciseId: exerciseId });
       return next();
     }
     if (typeof userMessage !== "string" || userMessage.trim() === "") {
+      logFallthrough("empty_userMessage");
       trace.traceRagGate(reqId, "empty_userMessage");
       return next();
     }
@@ -402,18 +412,21 @@ router.post("/chat/stream", async function (req, res, next) {
     // 2. Load exercise from MongoDB
     var ejercicio = await Ejercicio.findById(exerciseId).lean();
     if (ejercicio == null) {
+      logFallthrough("exercise_not_found", { exerciseId: exerciseId });
       trace.traceRagGate(reqId, "exercise_not_found", { exerciseId: exerciseId });
       return next();
     }
 
     var exerciseNum = getExerciseNum(ejercicio);
     if (exerciseNum == null) {
+      logFallthrough("no_exercise_number_in_title", { titulo: ejercicio.titulo });
       trace.traceRagGate(reqId, "no_exercise_number_in_title", { titulo: ejercicio.titulo });
       return next();
     }
 
     var correctAnswer = getCorrectAnswer(ejercicio);
     if (correctAnswer.length === 0) {
+      logFallthrough("no_correct_answer", { exerciseNum: exerciseNum, hasTutorContext: !!ejercicio.tutorContext, respuestaCorrecta: ejercicio.tutorContext && ejercicio.tutorContext.respuestaCorrecta });
       trace.traceRagGate(reqId, "no_correct_answer", { exerciseNum: exerciseNum, tutorContext: !!ejercicio.tutorContext });
       return next();
     }
@@ -545,6 +558,7 @@ router.post("/chat/stream", async function (req, res, next) {
 
     // If no RAG needed (greeting, etc.), fall through to original handler
     if (ragResult.decision === "no_rag") {
+      logFallthrough("no_rag_decision", { classification: ragResult.classification, pipelineMs: pipelineTime });
       trace.traceRagGate(reqId, "no_rag_decision", { classification: ragResult.classification, pipelineMs: pipelineTime });
       emitEvent("no_rag", "end", { reason: "greeting or non-RAG classification" });
       emitEvent("request_end", "end", { totalTimeMs: Date.now() - startTime });
@@ -1069,6 +1083,7 @@ router.post("/chat/stream", async function (req, res, next) {
     }
   } catch (err) {
     // Error before SSE headers → fall through to original handler
+    logFallthrough("EXCEPTION", { error: err.message, stack: err.stack ? err.stack.split("\n").slice(0, 3).join(" | ") : "-" });
     trace.traceRagGate(reqId, "exception_before_sse", { error: err.message, stack: err.stack ? err.stack.split("\n").slice(0, 3).join(" | ") : "-" });
     console.error("[RAG] Fallback to original handler:", err.message);
     emitEvent("request_error", "end", { error: err.message });
