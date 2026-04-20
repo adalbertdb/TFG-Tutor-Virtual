@@ -41,12 +41,13 @@ module.exports = {
   HISTORY_MAX_MESSAGES: Number(process.env.HISTORY_MAX_MESSAGES || 8),
 
   // File paths for the datasets and the knowledge graph
+  // __dirname = backend/src/infrastructure/llm/ → need 4 levels up to reach project root
   DATASETS_DIR: path.join(
-    __dirname, "..", "..", "..",
+    __dirname, "..", "..", "..", "..",
     "material-complementario", "llm", "datasets"
   ),
   KG_PATH: path.join(
-    __dirname, "..", "..", "..",
+    __dirname, "..", "..", "..", "..",
     "material-complementario", "llm", "knowledge-graph",
     "knowledge-graph-with-interactions-and-rewards.json"
   ),

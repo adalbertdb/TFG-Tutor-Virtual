@@ -459,10 +459,14 @@ router.post("/chat/stream", async (req, res) => {
     let firstChunk = true;
     let doneSeen = false;
 
+    let streamTraced = false;
     const endStream = async (reason) => {
       clearTimeout(maxTimer);
       if (aborted) return;
-      trace.traceRequestEnd(traceId, { outcome: "stream_" + reason, totalMs: nowMs() - t0, responseLen: fullAssistant.length });
+      if (!streamTraced) {
+        streamTraced = true;
+        trace.traceRequestEnd(traceId, { outcome: "stream_" + reason, totalMs: nowMs() - t0, responseLen: fullAssistant.length });
+      }
       await finalizeOnce({
         interaccionId: iid,
         fullAssistant,
