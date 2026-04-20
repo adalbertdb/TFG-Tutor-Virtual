@@ -48,6 +48,7 @@ const DEFAULT_START_MESSAGE =
 const DEBUG_OLLAMA = process.env.DEBUG_OLLAMA === "1";
 const DEBUG_DUMP_CONTEXT = process.env.DEBUG_DUMP_CONTEXT === "1";
 const DEBUG_DUMP_PATH = process.env.DEBUG_DUMP_PATH || "./debug_ollama";
+const trace = require("../../../infrastructure/events/pipelineDebugLogger");
 
 // TLS (solo si hiciera falta en DEV)
 const ALLOW_INSECURE_TLS = process.env.OLLAMA_INSECURE_TLS === "1";
@@ -309,6 +310,15 @@ router.post("/chat/stream", async (req, res) => {
     const userId = req.userId; // From session via globalAuth (NEVER from client)
     const { exerciseId, interaccionId, userMessage } = req.body || {};
 
+    // This handler only runs if ragMiddleware called next()
+    var traceId = trace.traceRequestStart("ollamaChatRoutes_FALLBACK", {
+      userId: userId,
+      exerciseId: exerciseId,
+      interaccionId: interaccionId,
+      userMessage: userMessage,
+    });
+    trace.traceRouteHandler(traceId, "rag_middleware_did_not_handle", { mode: mode, baseUrl: baseUrl });
+
     dlog(reqId, "➡️ request", {
       mode,
       baseUrl,
@@ -384,6 +394,12 @@ router.post("/chat/stream", async (req, res) => {
 
     if (correctNow) {
       const assistant = `${getFinishMessages(lang).exactAnswer}${FIN_TOKEN}`;
+      trace.traceDeterministicFinish(traceId, {
+        classification: "exact_match",
+        prevCorrectTurns: -1,
+        source: "ollamaChatRoutes (NO RAG, simple match)",
+        responseLen: assistant.length,
+      });
       sseSend(res, { chunk: assistant });
 
       clearTimeout(maxTimer);
@@ -398,6 +414,7 @@ router.post("/chat/stream", async (req, res) => {
           timing: { totalMs: nowMs() - t0 },
         },
       });
+      trace.traceRequestEnd(traceId, { outcome: "deterministic_finish_no_rag", totalMs: nowMs() - t0, responseLen: assistant.length });
       return;
     }
 
@@ -445,6 +462,7 @@ router.post("/chat/stream", async (req, res) => {
     const endStream = async (reason) => {
       clearTimeout(maxTimer);
       if (aborted) return;
+      trace.traceRequestEnd(traceId, { outcome: "stream_" + reason, totalMs: nowMs() - t0, responseLen: fullAssistant.length });
       await finalizeOnce({
         interaccionId: iid,
         fullAssistant,

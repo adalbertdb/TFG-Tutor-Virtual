@@ -19,6 +19,7 @@ const { resolveLanguage, getFinishMessages, getElementNamingInstruction, getRand
 const Ejercicio = require("../../../infrastructure/persistence/mongodb/models/ejercicio");
 const Interaccion = require("../../../infrastructure/persistence/mongodb/models/interaccion");
 const HeuristicSecurityAdapter = require("../../../infrastructure/security/HeuristicSecurityAdapter");
+const trace = require("../../../infrastructure/events/pipelineDebugLogger");
 
 const securityService = new HeuristicSecurityAdapter({
   logger: function (event, payload) {
@@ -361,12 +362,20 @@ function endSSE(res, hb) {
 router.post("/chat/stream", async function (req, res, next) {
   // Skip if RAG is disabled or not initialized
   if (!config.RAG_ENABLED || !ragReady) {
+    trace.traceRagGate("", "rag_disabled_or_not_ready", { RAG_ENABLED: config.RAG_ENABLED, ragReady: ragReady });
     return next();
   }
 
   const startTime = Date.now();
   requestCounter++;
   setRequestId("req_" + requestCounter + "_" + Date.now());
+
+  var reqId = trace.traceRequestStart("ragMiddleware", {
+    userId: req.userId,
+    exerciseId: (req.body || {}).exerciseId,
+    interaccionId: (req.body || {}).interaccionId,
+    userMessage: (req.body || {}).userMessage,
+  });
 
   try {
     // 1. Extract and validate inputs
@@ -375,21 +384,39 @@ router.post("/chat/stream", async function (req, res, next) {
     var userMessage = req.body.userMessage;
     var interaccionId = req.body.interaccionId;
 
-    if (!userId || !mongoose.Types.ObjectId.isValid(userId)) return next();
-    if (!exerciseId || !mongoose.Types.ObjectId.isValid(exerciseId)) return next();
-    if (typeof userMessage !== "string" || userMessage.trim() === "") return next();
+    if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
+      trace.traceRagGate(reqId, "invalid_userId", { userId: userId });
+      return next();
+    }
+    if (!exerciseId || !mongoose.Types.ObjectId.isValid(exerciseId)) {
+      trace.traceRagGate(reqId, "invalid_exerciseId", { exerciseId: exerciseId });
+      return next();
+    }
+    if (typeof userMessage !== "string" || userMessage.trim() === "") {
+      trace.traceRagGate(reqId, "empty_userMessage");
+      return next();
+    }
 
     emitEvent("request_start", "start", { userId: userId, exerciseId: exerciseId, userMessage: userMessage, interaccionId: interaccionId });
 
     // 2. Load exercise from MongoDB
     var ejercicio = await Ejercicio.findById(exerciseId).lean();
-    if (ejercicio == null) return next();
+    if (ejercicio == null) {
+      trace.traceRagGate(reqId, "exercise_not_found", { exerciseId: exerciseId });
+      return next();
+    }
 
     var exerciseNum = getExerciseNum(ejercicio);
-    if (exerciseNum == null) return next();
+    if (exerciseNum == null) {
+      trace.traceRagGate(reqId, "no_exercise_number_in_title", { titulo: ejercicio.titulo });
+      return next();
+    }
 
     var correctAnswer = getCorrectAnswer(ejercicio);
-    if (correctAnswer.length === 0) return next();
+    if (correctAnswer.length === 0) {
+      trace.traceRagGate(reqId, "no_correct_answer", { exerciseNum: exerciseNum, tutorContext: !!ejercicio.tutorContext });
+      return next();
+    }
 
     emitEvent("exercise_loaded", "end", { exerciseNum: exerciseNum, titulo: ejercicio.titulo, correctAnswer: correctAnswer, canonicalExercise: canonicalExercise[exerciseNum] || exerciseNum, datasetFile: config.EXERCISE_DATASET_MAP[exerciseNum] || "unknown" });
 
@@ -406,12 +433,20 @@ router.post("/chat/stream", async function (req, res, next) {
       earlyLang = resolveLanguage(earlyHistory);
     }
 
+    trace.traceRagAccepted(reqId, {
+      exerciseNum: exerciseNum,
+      correctAnswer: correctAnswer,
+      evaluableElements: evaluableElements,
+      lang: earlyLang,
+    });
+
     // 2b. Input guardrail: block prompt injection / off-topic BEFORE the LLM
     var securityResult = securityService.analyzeInput(userMessage.trim(), {
       lang: earlyLang,
       ejercicio: ejercicio,
       evaluableElements: evaluableElements,
     });
+    trace.traceSecurity(reqId, securityResult);
     if (!securityResult.safe) {
       emitEvent("security_block", "end", {
         category: securityResult.category,
@@ -499,8 +534,18 @@ router.post("/chat/stream", async function (req, res, next) {
     var pipelineTime = Date.now() - pipelineStart;
     emitEvent("pipeline_end", "end", { decision: ragResult.decision, classification: ragResult.classification, augmentationLength: (ragResult.augmentation || "").length, sourcesCount: (ragResult.sources || []).length, pipelineTimeMs: pipelineTime });
 
+    trace.traceClassify(reqId, {
+      type: ragResult.classification,
+      decision: ragResult.decision,
+      proposed: ragResult.proposed,
+      negated: ragResult.negated,
+      concepts: ragResult.mentionedElements,
+      hasReasoning: ragResult.classification === "correct_good_reasoning" || ragResult.classification === "correct_wrong_reasoning",
+    });
+
     // If no RAG needed (greeting, etc.), fall through to original handler
     if (ragResult.decision === "no_rag") {
+      trace.traceRagGate(reqId, "no_rag_decision", { classification: ragResult.classification, pipelineMs: pipelineTime });
       emitEvent("no_rag", "end", { reason: "greeting or non-RAG classification" });
       emitEvent("request_end", "end", { totalTimeMs: Date.now() - startTime });
       return next();
@@ -587,6 +632,16 @@ router.post("/chat/stream", async function (req, res, next) {
       var totalTurns = await countTotalAssistantTurns(iid);
       var stuckHint = "";
 
+      trace.traceLoopState(reqId, {
+        prevCorrectTurns: prevCorrectCount,
+        wrongStreak: wrongStreak,
+        totalTurns: totalTurns,
+        repetition: repetitionInfo.repeating,
+        frustration: detectFrustration(text),
+        demandJustification: demandJustification,
+        stuckHint: wrongStreak >= config.MAX_WRONG_STREAK || totalTurns >= config.MAX_TOTAL_TURNS,
+      });
+
       if (wrongStreak >= config.MAX_WRONG_STREAK || totalTurns >= config.MAX_TOTAL_TURNS) {
         console.log("[RAG] Global loop-break: wrongStreak=" + wrongStreak + " totalTurns=" + totalTurns);
         stuckHint = "[STUDENT IS STUCK]\n"
@@ -607,6 +662,12 @@ router.post("/chat/stream", async function (req, res, next) {
 
         if (ragResult.classification === "correct_good_reasoning") {
           // Student gave correct answer and has been reasoning (or gave reasoning now) → finish
+          trace.traceDeterministicFinish(reqId, {
+            classification: ragResult.classification,
+            prevCorrectTurns: prevCorrectCount || 0,
+            source: "ragMiddleware",
+            responseLen: (getFinishMessages(lang).identifiedResistances + FIN_TOKEN).length,
+          });
           emitEvent("deterministic_finish", "end", { classification: ragResult.classification, historyLength: prevHistory.length, finished: true });
           var finishMsg = getFinishMessages(lang).identifiedResistances + FIN_TOKEN;
           sseSend(res, { chunk: finishMsg });
@@ -709,9 +770,11 @@ router.post("/chat/stream", async function (req, res, next) {
       }
 
       // 10. Call Ollama (non-streaming so we can check guardrails before sending to client)
+      trace.traceLlmCall(reqId, "start", { model: config.OLLAMA_MODEL, messagesCount: messages.length, promptLen: augmentedPrompt.length, reason: "primary" });
       emitEvent("ollama_call_start", "start", { model: config.OLLAMA_MODEL, temperature: config.OLLAMA_TEMPERATURE, num_ctx: config.OLLAMA_NUM_CTX, num_predict: config.OLLAMA_NUM_PREDICT, keep_alive: config.OLLAMA_KEEP_ALIVE, messageCount: messages.length, ollamaUrl: config.OLLAMA_CHAT_URL });
       var ollamaStart = Date.now();
       var fullResponse = await callOllama(messages);
+      trace.traceLlmCall(reqId, "end", { durationMs: Date.now() - ollamaStart, responseLen: fullResponse.length, reason: "primary", response: fullResponse });
       emitEvent("ollama_call_end", "end", { responseLength: fullResponse.length, responsePreview: fullResponse, durationMs: Date.now() - ollamaStart, reason: "non-streaming (guardrail check)" });
 
       // 11. Guardrail checks: solution leak + false confirmation
@@ -922,8 +985,24 @@ router.post("/chat/stream", async function (req, res, next) {
         emitEvent("guardrail_fin_stripped", "end", { classification: ragResult.classification });
       }
 
+      // 11g. Trace all guardrail results
+      trace.traceGuardrails(reqId, {
+        solutionLeak: leakCheck.leaked,
+        falseConfirmation: confirmCheck.confirmed,
+        prematureConfirmation: prematureCheck.premature,
+        stateReveal: stateCheck.revealed,
+        elementNaming: namingCheck.named,
+        didacticExplanation: didacticCheck.explaining,
+        styleFixed: styleResult && styleResult.changed,
+        finStripped: ragResult.classification !== "correct_good_reasoning" && fullResponse.includes(FIN_TOKEN),
+        retries: (leakAttempt > 1 ? leakAttempt - 1 : 0) + (stateAttempt > 1 ? stateAttempt - 1 : 0) + (namingAttempt > 1 ? namingAttempt - 1 : 0) + (didacticAttempt > 1 ? didacticAttempt - 1 : 0),
+        finalLen: fullResponse.length,
+        finalResponse: fullResponse,
+      });
+
       // 12. Send response to client as SSE
       sseSend(res, { chunk: fullResponse });
+      trace.traceResponse(reqId, { len: fullResponse.length, containsFIN: fullResponse.includes(FIN_TOKEN), response: fullResponse });
       emitEvent("response_sent", "end", { responseLength: fullResponse.length, responsePreview: fullResponse, containsFIN: fullResponse.includes(FIN_TOKEN), guardrailTriggered: guardrailTriggered });
 
       // 13. Save assistant response to MongoDB with detailed metadata
@@ -968,9 +1047,19 @@ router.post("/chat/stream", async function (req, res, next) {
       });
       emitEvent("log_written", "end", { logPath: config.LOG_DIR, fields: ["exerciseNum", "userId", "correctAnswer", "classification", "decision", "query", "retrievedDocs", "augmentation", "response", "guardrailTriggered", "timing"] });
       emitEvent("request_end", "end", { totalTimeMs: Date.now() - startTime, guardrailTriggered: guardrailTriggered, pipelineTimeMs: pipelineTime, llmDurationMs: Date.now() - ollamaStart });
+
+      trace.traceRequestEnd(reqId, {
+        outcome: "rag_handled",
+        totalMs: Date.now() - startTime,
+        responseLen: fullResponse.length,
+        classification: ragResult.classification,
+        decision: ragResult.decision,
+        guardrailTriggered: guardrailTriggered,
+      });
     } catch (innerErr) {
       // Error after SSE headers were sent → send error event and close
       clearInterval(hb);
+      trace.traceError(reqId, "rag_inner", innerErr);
       console.error("[RAG] Error:", innerErr.message);
       emitEvent("request_error", "end", { error: innerErr.message });
       sseSend(res, { error: "Error en el sistema RAG." });
@@ -980,6 +1069,7 @@ router.post("/chat/stream", async function (req, res, next) {
     }
   } catch (err) {
     // Error before SSE headers → fall through to original handler
+    trace.traceRagGate(reqId, "exception_before_sse", { error: err.message, stack: err.stack ? err.stack.split("\n").slice(0, 3).join(" | ") : "-" });
     console.error("[RAG] Fallback to original handler:", err.message);
     emitEvent("request_error", "end", { error: err.message });
     return next();
