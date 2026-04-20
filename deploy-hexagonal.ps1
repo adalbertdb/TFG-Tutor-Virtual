@@ -6,6 +6,7 @@
 #         .\deploy-hexagonal.ps1 -BuildFrontend
 #         .\deploy-hexagonal.ps1 -SkipEnvPatch
 #         .\deploy-hexagonal.ps1 -StopAll
+#         .\deploy-hexagonal.ps1 -DebugPipeline   (activa logs [DEBUG_PIPELINE])
 # ================================================================
 
 [CmdletBinding()]
@@ -14,6 +15,7 @@ param(
     [switch]$SkipEnvPatch,
     [switch]$SkipHealthChecks,
     [switch]$StopAll,
+    [switch]$DebugPipeline,
 
     # --- Rutas / servicios (editar si cambian en el servidor) ---
     [string]$ProjectRoot   = "C:\Users\admin\TutorVirtual_Irene",
@@ -297,9 +299,14 @@ if (Test-Port "127.0.0.1" $BackendPort) {
     }
 
     $backendCmd = "node src/index.js"
+    $debugPrefix = ""
+    if ($DebugPipeline) {
+        $debugPrefix = "`$env:DEBUG_PIPELINE='1'; Write-Host '[DEBUG_PIPELINE enabled]' -ForegroundColor Yellow; "
+        Info "DebugPipeline activado: la ventana del backend correra con DEBUG_PIPELINE=1"
+    }
     Info "Lanzando en ventana nueva: $backendCmd (cwd=$BackendDir)"
     Start-Process -FilePath "powershell.exe" `
-        -ArgumentList "-NoExit", "-Command", "`$Host.UI.RawUI.WindowTitle='Backend hexagonal :$BackendPort'; Set-Location `"$BackendDir`"; $backendCmd" `
+        -ArgumentList "-NoExit", "-Command", "`$Host.UI.RawUI.WindowTitle='Backend hexagonal :$BackendPort'; Set-Location `"$BackendDir`"; $debugPrefix$backendCmd" `
         -WindowStyle Normal | Out-Null
 
     if (-not (Wait-Port "Backend Node" "127.0.0.1" $BackendPort 60)) {

@@ -1,6 +1,7 @@
 "use strict";
 
 const AgentInterface = require("./base/AgentInterface");
+const debugLogger = require("../../infrastructure/events/pipelineDebugLogger");
 
 /**
  * ClassifierAgent: Classifies the student's message to determine response strategy.
@@ -24,6 +25,7 @@ class ClassifierAgent extends AgentInterface {
       context.correctAnswer,
       context.evaluableElements
     );
+    debugLogger.logClassify(context.userMessage, context.classification);
   }
 
   canSkip() {

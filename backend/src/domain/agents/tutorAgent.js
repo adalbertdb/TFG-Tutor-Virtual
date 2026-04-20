@@ -1,6 +1,7 @@
 "use strict";
 
 const AgentInterface = require("./base/AgentInterface");
+const debugLogger = require("../../infrastructure/events/pipelineDebugLogger");
 
 /**
  * TutorAgent: Builds the augmented prompt and calls the LLM.
@@ -78,6 +79,8 @@ class TutorAgent extends AgentInterface {
       ...context.history,
     ];
 
+    debugLogger.logPrompt(augmentedPrompt, context.classification?.type);
+
     // 6. Call LLM
     const ollamaStart = Date.now();
     context.llmResponse = await this.llmService.chatCompletion(messages, {
@@ -86,6 +89,8 @@ class TutorAgent extends AgentInterface {
       numCtx: this.config.OLLAMA_NUM_CTX,
     });
     context.timing.ollamaMs = Date.now() - ollamaStart;
+
+    debugLogger.logLlmOut(context.llmResponse);
   }
 
   _buildProgressHint(history) {

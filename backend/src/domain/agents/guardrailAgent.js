@@ -1,6 +1,7 @@
 "use strict";
 
 const AgentInterface = require("./base/AgentInterface");
+const debugLogger = require("../../infrastructure/events/pipelineDebugLogger");
 
 /**
  * GuardrailAgent: Validates LLM responses against educational safety rules.
@@ -108,6 +109,8 @@ class GuardrailAgent extends AgentInterface {
 
     context.finalResponse = response;
     context.guardrailsTriggered = triggered;
+
+    debugLogger.logGuardrail(triggered, response);
   }
 
   async _retry(context, additionalInstruction) {
