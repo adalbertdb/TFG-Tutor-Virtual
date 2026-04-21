@@ -143,14 +143,19 @@ app.post("/api/llm/query", requireAuth, (req, res) => {
 const frontendDist = path.join(__dirname, "..", "..", "frontend", "dist");
 console.log("FRONTEND DIST =", frontendDist);
 
-// Assets con caché largo; index.html sin caché
+// Assets con caché largo (fingerprinted por Vite); index.html SIN caché.
+// Los headers anti-caché son agresivos para evitar que nginx, navegadores o
+// proxies sirvan un index.html viejo que referencie hashes que ya no existen.
 app.use(
   express.static(frontendDist, {
     immutable: true,
     maxAge: "365d",
     setHeaders: (res, filePath) => {
       if (filePath.endsWith("index.html")) {
-        res.setHeader("Cache-Control", "no-store");
+        res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0");
+        res.setHeader("Pragma", "no-cache");
+        res.setHeader("Expires", "0");
+        res.setHeader("Surrogate-Control", "no-store");
       }
     },
   })
@@ -165,7 +170,10 @@ app.get(/^\/(?!api\/|static\/).*/, (req, res, next) => {
     // Es una petición a un archivo concreto que no encontró express.static → 404 honesto
     return res.status(404).type("text/plain").send("Not found");
   }
-  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0");
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Expires", "0");
+  res.setHeader("Surrogate-Control", "no-store");
   res.sendFile(path.join(frontendDist, "index.html"));
 });
 
