@@ -51,6 +51,27 @@ class Ejercicio {
       this.tutorContext !== null && this.getCorrectAnswer().length > 0
     );
   }
+
+  /**
+   * JSON shape compatible with the legacy Mongo API consumed by the frontend.
+   * Emits `_id`, and keeps `tutorContext` in camelCase (matches frontend usage).
+   */
+  toJSON() {
+    return {
+      _id: this.id,
+      id: this.id,
+      titulo: this.titulo,
+      enunciado: this.enunciado,
+      imagen: this.imagen,
+      asignatura: this.asignatura,
+      concepto: this.concepto,
+      nivel: this.nivel,
+      CA: this.ca,
+      tutorContext: this.tutorContext,
+      createdAt: this.createdAt,
+      updatedAt: this.updatedAt,
+    };
+  }
 }
 
 module.exports = Ejercicio;
