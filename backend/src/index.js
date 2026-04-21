@@ -91,17 +91,21 @@ app.use("/static", express.static(staticDir, { fallthrough: false }));
 // ====== Sesión (PostgreSQL) ======
 // La tabla `sessions` es creada por la migración 006_create_sessions.sql.
 // connect-pg-simple gestiona su propio pool interno usando PG_CONNECTION_STRING.
+const pgStore = new PgSession({
+  conString: process.env.PG_CONNECTION_STRING,
+  tableName: "sessions",
+  createTableIfMissing: false,
+  // Emit errors visibly so we can diagnose session store failures (before this,
+  // a failing store could silently hang CAS login — errors must not be silent).
+  errorLog: function (msg) { console.error("[SESSION STORE]", msg); },
+});
 app.use(
   session({
     name: "sid_irene",
     secret: process.env.SESSION_SECRET,
     resave: false,
     saveUninitialized: false,
-    store: new PgSession({
-      conString: process.env.PG_CONNECTION_STRING,
-      tableName: "sessions",
-      createTableIfMissing: false,
-    }),
+    store: pgStore,
     cookie: {
       httpOnly: true,
       // secure=true en producción (HTTPS/Nginx). En dev local (DEV_BYPASS_AUTH=true),

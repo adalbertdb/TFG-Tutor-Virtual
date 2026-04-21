@@ -60,21 +60,29 @@ function containerNotReady(res) {
  * 1. CAS LOGIN
  * ═══════════════════════════════════════════════════════════════════ */
 router.get("/api/auth/cas/login", async (req, res) => {
+  console.log("[CAS LOGIN] start", { returnTo: req.query.returnTo });
   try {
     const state = crypto.randomBytes(16).toString("hex");
     const returnTo = req.query.returnTo || `${FRONTEND_BASE_URL || "/"}`;
     req.session.oauthState = state;
     req.session.returnTo = returnTo;
 
+    // Persistimos la sesión antes del redirect para evitar la carrera en la que
+    // el browser vuelve del CAS antes de que el session store haya escrito.
+    await new Promise((resolve, reject) => {
+      req.session.save((err) => (err ? reject(err) : resolve()));
+    });
+
     const authorizationUri = oauthClient.authorizeURL({
       redirect_uri: OAUTH_REDIRECT_URI,
       scope: OAUTH_SCOPES,
       state,
     });
+    console.log("[CAS LOGIN] redirect to CAS", { state: state.substring(0, 8) + "...", returnTo });
     return res.redirect(authorizationUri);
   } catch (err) {
     console.error("[CAS LOGIN ERROR]", err);
-    return res.status(500).send("No se pudo iniciar el login con CAS.");
+    return res.status(500).send("No se pudo iniciar el login con CAS: " + (err.message || "error desconocido"));
   }
 });
 
@@ -82,13 +90,24 @@ router.get("/api/auth/cas/login", async (req, res) => {
  * 2. CAS CALLBACK
  * ═══════════════════════════════════════════════════════════════════ */
 router.get("/api/auth/cas/callback", async (req, res) => {
+  console.log("[CAS CALLBACK] start", {
+    hasCode: !!req.query.code,
+    hasState: !!req.query.state,
+    sessionHasState: !!req.session?.oauthState,
+  });
   const usuarioRepo = getUsuarioRepo();
-  if (!usuarioRepo) return containerNotReady(res);
+  if (!usuarioRepo) {
+    console.error("[CAS CALLBACK] container not ready");
+    return containerNotReady(res);
+  }
 
   try {
     const { code, state } = req.query;
     if (!code || state !== req.session.oauthState) {
-      console.error("[CAS ERROR] State no coincide o code no recibido.");
+      console.error("[CAS ERROR] State no coincide o code no recibido.", {
+        receivedState: state?.substring(0, 8) + "...",
+        sessionState: req.session?.oauthState?.substring(0, 8) + "...",
+      });
       return res.status(400).send("Solicitud inválida (state/code).");
     }
 
@@ -144,14 +163,18 @@ router.get("/api/auth/cas/callback", async (req, res) => {
 
     // Upsert contra Postgres. Los campos pasados como updateFields se
     // sobrescriben si el usuario existe; los de insertFields solo se usan al crear.
+    console.log("[CAS CALLBACK] upsert usuario", { upvLogin });
     const usuario = await usuarioRepo.upsertByUpvLogin(
       upvLogin,
       { email, nombre, apellidos, dni },
       { grupos }
     );
+    console.log("[CAS CALLBACK] usuario OK", { id: usuario.id, upvLogin: usuario.upvLogin });
 
-    // Actualiza last_login_at
-    await usuarioRepo.updateById(usuario.id, { lastLoginAt: new Date() });
+    // Actualiza last_login_at (non-blocking; si falla no rompe el login)
+    usuarioRepo.updateById(usuario.id, { lastLoginAt: new Date() }).catch((e) => {
+      console.warn("[CAS CALLBACK] updateById lastLoginAt failed (ignoring):", e.message);
+    });
 
     req.session.user = {
       id: usuario.id,
@@ -163,9 +186,15 @@ router.get("/api/auth/cas/callback", async (req, res) => {
       mode: "cas",
     };
 
+    // Guarda la sesión explícitamente antes del redirect
+    await new Promise((resolve, reject) => {
+      req.session.save((err) => (err ? reject(err) : resolve()));
+    });
+
     const goto = req.session.returnTo || `${FRONTEND_BASE_URL || "/"}`;
     delete req.session.oauthState;
     delete req.session.returnTo;
+    console.log("[CAS CALLBACK] redirect to frontend", { goto });
     return res.redirect(goto);
   } catch (err) {
     console.error("[CAS FATAL ERROR]", {
