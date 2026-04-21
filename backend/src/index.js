@@ -156,8 +156,15 @@ app.use(
   })
 );
 
-// SPA fallback: NO capturar /api ni /static
-app.get(/^\/(?!api\/|static\/).*/, (req, res) => {
+// SPA fallback: solo devolver index.html para rutas de NAVEGACIÓN (sin extensión).
+// Requests a archivos con extensión (.js, .css, .png, .map...) que no se encuentren
+// deben devolver 404, NO el index.html (evita el error "MIME type text/html" en módulos
+// ES cuando el navegador tiene cacheado un hash antiguo de Vite que ya no existe).
+app.get(/^\/(?!api\/|static\/).*/, (req, res, next) => {
+  if (path.extname(req.path)) {
+    // Es una petición a un archivo concreto que no encontró express.static → 404 honesto
+    return res.status(404).type("text/plain").send("Not found");
+  }
   res.setHeader("Cache-Control", "no-store");
   res.sendFile(path.join(frontendDist, "index.html"));
 });
