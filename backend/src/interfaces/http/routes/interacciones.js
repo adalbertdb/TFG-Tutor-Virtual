@@ -57,7 +57,7 @@ router.get("/byExercise/:exerciseId", async (req, res) => {
   try {
     const { exerciseId } = req.params;
     if (!isValidId(exerciseId)) return res.status(400).json({ message: "ID de ejercicio inválido." });
-    const i = await r.findLatestByExerciseAndUser(req.userId, exerciseId);
+    const i = await r.findLatestByExerciseAndUser(exerciseId, req.userId);
     return res.status(200).json(i || null);
   } catch (err) {
     return res.status(500).json({ message: err.message });
@@ -75,7 +75,7 @@ router.get("/byExerciseAndUser/:exerciseId/:userId", async (req, res) => {
     if (!canAccessUserData(userId, req)) {
       return res.status(403).json({ message: "No autorizado." });
     }
-    const i = await r.findLatestByExerciseAndUser(userId, exerciseId);
+    const i = await r.findLatestByExerciseAndUser(exerciseId, userId);
     return res.status(200).json(i || null);
   } catch (err) {
     return res.status(500).json({ message: err.message });
