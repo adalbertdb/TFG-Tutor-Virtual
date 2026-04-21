@@ -54,6 +54,20 @@ router.post("/chat/stream", async function (req, res, next) {
   if (typeof userMessage !== "string" || userMessage.trim() === "") return next();
   if (interaccionId && !_isValidId(interaccionId)) return next();
 
+  // Pre-check: for greetings and off_topic the orchestrator will set
+  // fallthrough=true; defer to the legacy handler BEFORE opening SSE so we
+  // can still call next(). classifyQuery is pure/sync and <1ms.
+  try {
+    const { classifyQuery } = require("../../../domain/services/rag/queryClassifier");
+    const pre = classifyQuery(userMessage.trim(), [], []);
+    if (pre && (pre.type === "greeting" || pre.type === "off_topic")) {
+      trace.traceRouteHandler("", "orchestrator_pre_defer_to_fallback", { classification: pre.type });
+      return next();
+    }
+  } catch (e) {
+    // If the pre-check itself fails, keep going — the orchestrator still runs.
+  }
+
   const reqId = trace.traceRequestStart("orchestrator", {
     userId: userId, exerciseId: exerciseId, interaccionId: interaccionId, userMessage: userMessage,
   });
