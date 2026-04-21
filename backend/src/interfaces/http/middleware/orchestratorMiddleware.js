@@ -12,7 +12,11 @@
 // guardrails.*, timing.*, sourcesCount, isCorrectAnswer, decision.
 
 const express = require("express");
-const mongoose = require("mongoose");
+// ID validator accepting ObjectId (legacy) or UUID (new).
+function _isValidId(v) {
+  if (typeof v !== "string") return false;
+  return /^[a-f0-9]{24}$/i.test(v) || /^[0-9a-f-]{36}$/i.test(v);
+}
 const container = require("../../../container");
 const trace = require("../../../infrastructure/events/pipelineDebugLogger");
 
@@ -45,10 +49,10 @@ router.post("/chat/stream", async function (req, res, next) {
   const { exerciseId, interaccionId, userMessage } = req.body || {};
 
   // Quick validation (matches ragMiddleware pre-checks)
-  if (!userId || !mongoose.Types.ObjectId.isValid(userId)) return next();
-  if (!exerciseId || !mongoose.Types.ObjectId.isValid(exerciseId)) return next();
+  if (!userId || !_isValidId(userId)) return next();
+  if (!exerciseId || !_isValidId(exerciseId)) return next();
   if (typeof userMessage !== "string" || userMessage.trim() === "") return next();
-  if (interaccionId && !mongoose.Types.ObjectId.isValid(interaccionId)) return next();
+  if (interaccionId && !_isValidId(interaccionId)) return next();
 
   const reqId = trace.traceRequestStart("orchestrator", {
     userId: userId, exerciseId: exerciseId, interaccionId: interaccionId, userMessage: userMessage,

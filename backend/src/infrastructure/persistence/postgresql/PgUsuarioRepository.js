@@ -113,7 +113,7 @@ class PgUsuarioRepository extends IUsuarioRepository {
   async findByIds(ids) {
     if (!ids.length) return [];
     const { rows } = await this.pool.query(
-      "SELECT * FROM usuarios WHERE id = ANY($1::uuid[])",
+      "SELECT * FROM usuarios WHERE id = ANY($1::text[])",
       [ids]
     );
     return rows.map(rowToDomain);

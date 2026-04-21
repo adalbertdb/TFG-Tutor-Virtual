@@ -4,7 +4,13 @@
 const express = require("express");
 const axios = require("axios");
 const https = require("https");
-const mongoose = require("mongoose");
+// ID validation: accepts MongoDB ObjectId (24 hex chars) or UUID (36 chars with dashes).
+// Post-migration, IDs stored in Postgres preserve the original ObjectId format for
+// historical data and use UUIDs for new records.
+function isValidId(v) {
+  if (typeof v !== "string") return false;
+  return /^[a-f0-9]{24}$/i.test(v) || /^[0-9a-f-]{36}$/i.test(v);
+}
 const fs = require("fs");
 const path = require("path");
 const config = require("../../../infrastructure/llm/config");
@@ -16,10 +22,20 @@ const { logInteraction } = require("../../../infrastructure/llm/logger");
 const { setRequestId, emitEvent } = require("../../../infrastructure/events/ragEventBus");
 const { buildTutorSystemPrompt } = require("../../../domain/services/promptBuilder");
 const { resolveLanguage, getFinishMessages, getElementNamingInstruction, getRandomIntermediatePhrase, getAllPatterns, frustrationPatterns: frustrationDict } = require("../../../domain/services/languageManager");
-const Ejercicio = require("../../../infrastructure/persistence/mongodb/models/ejercicio");
-const Interaccion = require("../../../infrastructure/persistence/mongodb/models/interaccion");
+const container = require("../../../container");
+const Message = require("../../../domain/entities/Message");
 const HeuristicSecurityAdapter = require("../../../infrastructure/security/HeuristicSecurityAdapter");
 const trace = require("../../../infrastructure/events/pipelineDebugLogger");
+
+// Repos del container (para el path legacy; si container no está listo, fallthrough)
+function repos() {
+  if (!container._initialized) return null;
+  return {
+    ejercicioRepo: container.ejercicioRepo,
+    interaccionRepo: container.interaccionRepo,
+    messageRepo: container.messageRepo,
+  };
+}
 
 const securityService = new HeuristicSecurityAdapter({
   logger: function (event, payload) {
@@ -182,78 +198,36 @@ async function callOllama(messages) {
   return (response.data.message && response.data.message.content) || "";
 }
 
-// Count how many previous turns had a "correct" classification (for loop detection)
-// Prevents the tutor from endlessly asking for better reasoning when the student has the right answer
+// Count previous turns classified as "correct-ish" (for loop detection).
 async function countPreviousCorrectTurns(interaccionId) {
-  var doc = await Interaccion.findById(interaccionId).select({ conversacion: 1 }).lean();
-  if (!doc || !Array.isArray(doc.conversacion)) return 0;
-  var count = 0;
-  var correctTypes = ["correct_no_reasoning", "correct_wrong_reasoning", "correct_good_reasoning", "partial_correct"];
-  for (var i = 0; i < doc.conversacion.length; i++) {
-    var msg = doc.conversacion[i];
-    if (msg.role === "assistant" && msg.metadata && msg.metadata.classification) {
-      for (var j = 0; j < correctTypes.length; j++) {
-        if (msg.metadata.classification === correctTypes[j]) {
-          count++;
-          break;
-        }
-      }
-    }
+  const r = repos(); if (!r) return 0;
+  const all = await r.messageRepo.getAllMessages(interaccionId);
+  const correctTypes = ["correct_no_reasoning", "correct_wrong_reasoning", "correct_good_reasoning", "partial_correct"];
+  let count = 0;
+  for (const m of all) {
+    const c = m.metadata?.classification || m.classification;
+    if (m.role === "assistant" && c && correctTypes.includes(c)) count++;
   }
   return count;
 }
 
-// Count total assistant turns in the conversation
 async function countTotalAssistantTurns(interaccionId) {
-  var doc = await Interaccion.findById(interaccionId).select({ conversacion: 1 }).lean();
-  if (!doc || !Array.isArray(doc.conversacion)) return 0;
-  var count = 0;
-  for (var i = 0; i < doc.conversacion.length; i++) {
-    if (doc.conversacion[i].role === "assistant") count++;
-  }
-  return count;
+  const r = repos(); if (!r) return 0;
+  return r.messageRepo.countAssistantMessages(interaccionId);
 }
 
-// Count consecutive wrong classifications from the end of conversation
-// Returns how many assistant messages in a row have wrong_answer, wrong_concept, or single_word
 async function countConsecutiveWrongTurns(interaccionId) {
-  var doc = await Interaccion.findById(interaccionId).select({ conversacion: 1 }).lean();
-  if (!doc || !Array.isArray(doc.conversacion)) return 0;
-  var wrongTypes = ["wrong_answer", "wrong_concept", "single_word"];
-  var count = 0;
-  for (var i = doc.conversacion.length - 1; i >= 0; i--) {
-    var msg = doc.conversacion[i];
-    if (msg.role !== "assistant") continue;
-    if (!msg.metadata || !msg.metadata.classification) break;
-    var isWrong = false;
-    for (var j = 0; j < wrongTypes.length; j++) {
-      if (msg.metadata.classification === wrongTypes[j]) {
-        isWrong = true;
-        break;
-      }
-    }
-    if (!isWrong) break;
-    count++;
-  }
-  return count;
+  const r = repos(); if (!r) return 0;
+  return r.messageRepo.countConsecutiveFromEnd(
+    interaccionId,
+    ["wrong_answer", "wrong_concept", "single_word"]
+  );
 }
 
-// Load last N messages from conversation history
 async function loadHistory(interaccionId) {
-  const doc = await Interaccion.findById(interaccionId)
-    .select({ conversacion: 1 })
-    .slice("conversacion", -config.HISTORY_MAX_MESSAGES)
-    .lean();
-
-  if (doc == null || !Array.isArray(doc.conversacion)) {
-    return [];
-  }
-
-  const messages = [];
-  for (let i = 0; i < doc.conversacion.length; i++) {
-    messages.push({ role: doc.conversacion[i].role, content: doc.conversacion[i].content });
-  }
-  return messages;
+  const r = repos(); if (!r) return [];
+  const msgs = await r.messageRepo.getLastMessages(interaccionId, config.HISTORY_MAX_MESSAGES);
+  return msgs.map((m) => ({ role: m.role, content: m.content }));
 }
 
 // Build a short hint reminding the LLM what its last question was,
@@ -286,19 +260,10 @@ function buildConversationProgressHint(history) {
 // Uses a sliding window: compares ALL pairs among the last 4 assistant questions.
 // This catches alternating patterns (A-B-A-B) that a 2-message comparison would miss.
 async function detectTutorRepetition(interaccionId) {
-  var doc = await Interaccion.findById(interaccionId)
-    .select({ conversacion: { $slice: -12 } })
-    .lean();
-  if (!doc || !Array.isArray(doc.conversacion)) return { repeating: false };
-
-  // Collect the last 4 assistant messages
-  var assistantMessages = [];
-  for (var i = doc.conversacion.length - 1; i >= 0 && assistantMessages.length < 4; i--) {
-    if (doc.conversacion[i].role === "assistant") {
-      assistantMessages.push(doc.conversacion[i].content || "");
-    }
-  }
-  if (assistantMessages.length < 2) return { repeating: false };
+  const r = repos(); if (!r) return { repeating: false };
+  const lastAssistant = await r.messageRepo.getLastAssistantMessages(interaccionId, 4);
+  if (lastAssistant.length < 2) return { repeating: false };
+  const assistantMessages = lastAssistant.map((m) => m.content || "");
 
   // Extract the last question from each assistant message
   function extractLastQuestion(text) {
@@ -391,12 +356,12 @@ router.post("/chat/stream", async function (req, res, next) {
     var userMessage = req.body.userMessage;
     var interaccionId = req.body.interaccionId;
 
-    if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
+    if (!userId || !isValidId(userId)) {
       logFallthrough("invalid_userId", { userId: userId });
       trace.traceRagGate(reqId, "invalid_userId", { userId: userId });
       return next();
     }
-    if (!exerciseId || !mongoose.Types.ObjectId.isValid(exerciseId)) {
+    if (!exerciseId || !isValidId(exerciseId)) {
       logFallthrough("invalid_exerciseId", { exerciseId: exerciseId });
       trace.traceRagGate(reqId, "invalid_exerciseId", { exerciseId: exerciseId });
       return next();
@@ -410,7 +375,9 @@ router.post("/chat/stream", async function (req, res, next) {
     emitEvent("request_start", "start", { userId: userId, exerciseId: exerciseId, userMessage: userMessage, interaccionId: interaccionId });
 
     // 2. Load exercise from MongoDB
-    var ejercicio = await Ejercicio.findById(exerciseId).lean();
+    var _r = repos();
+    if (!_r) return next();
+    var ejercicio = await _r.ejercicioRepo.findById(exerciseId);
     if (ejercicio == null) {
       logFallthrough("exercise_not_found", { exerciseId: exerciseId });
       trace.traceRagGate(reqId, "exercise_not_found", { exerciseId: exerciseId });
@@ -441,7 +408,7 @@ router.post("/chat/stream", async function (req, res, next) {
 
     // Resolve language early (needed for intermediate feedback phrases in pipeline)
     var earlyLang = "es";
-    if (interaccionId && mongoose.Types.ObjectId.isValid(interaccionId)) {
+    if (interaccionId && isValidId(interaccionId)) {
       var earlyHistory = await loadHistory(interaccionId);
       earlyLang = resolveLanguage(earlyHistory);
     }
@@ -486,43 +453,30 @@ router.post("/chat/stream", async function (req, res, next) {
       try {
         var iidBlock = interaccionId || null;
         if (iidBlock) {
-          var existsB = await Interaccion.exists({ _id: iidBlock, usuario_id: userId });
+          var existsB = await _r.interaccionRepo.existsForUser(iidBlock, userId);
           if (!existsB) iidBlock = null;
         }
         if (iidBlock == null) {
-          var createdB = await Interaccion.create({
-            usuario_id: userId,
-            ejercicio_id: exerciseId,
-            inicio: new Date(),
-            fin: new Date(),
-            conversacion: [],
+          var createdB = await _r.interaccionRepo.create({
+            usuarioId: userId,
+            ejercicioId: exerciseId,
           });
-          iidBlock = createdB._id.toString();
+          iidBlock = createdB.id;
           sseSend(res, { interaccionId: iidBlock });
         }
 
-        await Interaccion.updateOne(
-          { _id: iidBlock },
-          {
-            $push: {
-              conversacion: {
-                $each: [
-                  { role: "user", content: userMessage.trim() },
-                  {
-                    role: "assistant",
-                    content: securityResult.redirectMessage,
-                    metadata: {
-                      blockedByInputGuardrail: true,
-                      category: securityResult.category,
-                      matchedPattern: securityResult.matchedPattern,
-                    },
-                  },
-                ],
-              },
-              $set: { fin: new Date() },
-            }
-          }
-        );
+        await _r.messageRepo.appendMessage(iidBlock, new Message({
+          interaccionId: iidBlock, role: "user", content: userMessage.trim(),
+        }));
+        await _r.messageRepo.appendMessage(iidBlock, new Message({
+          interaccionId: iidBlock, role: "assistant", content: securityResult.redirectMessage,
+          metadata: {
+            blockedByInputGuardrail: true,
+            category: securityResult.category,
+            matchedPattern: securityResult.matchedPattern,
+          },
+        }));
+        await _r.interaccionRepo.updateFin(iidBlock, new Date());
 
         sseSend(res, { chunk: securityResult.redirectMessage });
         endSSE(res, hbBlock);
@@ -589,37 +543,29 @@ router.post("/chat/stream", async function (req, res, next) {
       // 5. Load or create Interaccion
       var iid = interaccionId || null;
       if (iid) {
-        // Verify the interaccion exists AND belongs to the authenticated user
-        var exists = await Interaccion.exists({ _id: iid, usuario_id: userId });
+        var exists = await _r.interaccionRepo.existsForUser(iid, userId);
         if (!exists) iid = null;
       }
       if (iid == null) {
-        var created = await Interaccion.create({
-          usuario_id: userId,
-          ejercicio_id: exerciseId,
-          inicio: new Date(),
-          fin: new Date(),
-          conversacion: [],
+        var created = await _r.interaccionRepo.create({
+          usuarioId: userId, ejercicioId: exerciseId,
         });
-        iid = created._id.toString();
+        iid = created.id;
         sseSend(res, { interaccionId: iid });
       }
 
       // 6. Save user message (with student response time if there is a previous assistant message)
       var text = userMessage.trim();
       var studentResponseMs = null;
-      var lastDoc = await Interaccion.findById(iid).select({ conversacion: { $slice: -1 } }).lean();
-      if (lastDoc && lastDoc.conversacion && lastDoc.conversacion.length > 0) {
-        var lastMsg = lastDoc.conversacion[lastDoc.conversacion.length - 1];
-        if (lastMsg.role === "assistant" && lastMsg.timestamp) {
-          studentResponseMs = Date.now() - new Date(lastMsg.timestamp).getTime();
-        }
+      var lastMsg = await _r.messageRepo.getLastMessage(iid);
+      if (lastMsg && lastMsg.role === "assistant" && lastMsg.timestamp) {
+        studentResponseMs = Date.now() - new Date(lastMsg.timestamp).getTime();
       }
-      var userMetadata = studentResponseMs != null ? { metadata: { studentResponseMs: studentResponseMs } } : {};
-      await Interaccion.updateOne(
-        { _id: iid },
-        { $push: { conversacion: Object.assign({ role: "user", content: text }, userMetadata) }, $set: { fin: new Date() } }
-      );
+      await _r.messageRepo.appendMessage(iid, new Message({
+        interaccionId: iid, role: "user", content: text,
+        metadata: studentResponseMs != null ? { studentResponseMs } : null,
+      }));
+      await _r.interaccionRepo.updateFin(iid, new Date());
 
       // 7. Deterministic finish: correct answer → check if we can finish directly
       var isCorrect = ragResult.classification === "correct_good_reasoning"
@@ -689,15 +635,16 @@ router.post("/chat/stream", async function (req, res, next) {
           var finishMsg = getFinishMessages(lang).identifiedResistances + FIN_TOKEN;
           sseSend(res, { chunk: finishMsg });
 
-          await Interaccion.updateOne(
-            { _id: iid },
-            { $push: { conversacion: { role: "assistant", content: finishMsg, metadata: {
+          await _r.messageRepo.appendMessage(iid, new Message({
+            interaccionId: iid, role: "assistant", content: finishMsg,
+            metadata: {
               classification: ragResult.classification,
               decision: "deterministic_finish",
               isCorrectAnswer: true,
               timing: { pipelineMs: pipelineTime, totalMs: Date.now() - startTime },
-            } } }, $set: { fin: new Date() } }
-          );
+            },
+          }));
+          await _r.interaccionRepo.updateFin(iid, new Date());
 
           emitEvent("mongodb_save", "end", { interaccionId: iid, messagesAdded: 2 });
           endSSE(res, hb);
@@ -1079,10 +1026,10 @@ router.post("/chat/stream", async function (req, res, next) {
         sourcesCount: (ragResult.sources || []).length,
         isCorrectAnswer: isCorrect || false,
       };
-      await Interaccion.updateOne(
-        { _id: iid },
-        { $push: { conversacion: { role: "assistant", content: fullResponse, metadata: assistantMetadata } }, $set: { fin: new Date() } }
-      );
+      await _r.messageRepo.appendMessage(iid, new Message({
+        interaccionId: iid, role: "assistant", content: fullResponse, metadata: assistantMetadata,
+      }));
+      await _r.interaccionRepo.updateFin(iid, new Date());
       emitEvent("mongodb_save", "end", { interaccionId: iid, messagesAdded: 2 });
 
       // 14. Close SSE connection

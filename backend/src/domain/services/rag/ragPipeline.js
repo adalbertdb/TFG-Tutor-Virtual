@@ -5,7 +5,7 @@ const { classifyQuery, extractResistances, types } = require("./queryClassifier"
 const { hybridSearch } = require("../../../infrastructure/search/hybridSearch");
 const { searchKG } = require("../../../infrastructure/search/knowledgeGraph");
 const { emitEvent } = require("../../../infrastructure/events/ragEventBus");
-const Resultado = require("../../../infrastructure/persistence/mongodb/models/resultado");
+const container = require("../../../container");
 const { getAllPatterns, conceptKeywords: conceptDict, normalizeToSpanish, getIntermediateFeedback } = require("../languageManager");
 
 // Format dataset examples as context for the LLM
@@ -237,46 +237,32 @@ function formatClassificationHint(classification, correctAnswer, lang) {
   return text;
 }
 
-// Load the student's past AC errors from the Resultado model
+// Load the student's past AC errors via the Resultado repository (Pg-backed).
 async function loadStudentHistory(userId) {
-  if (userId == null) {
-    return "";
-  }
+  if (userId == null) return "";
+  if (!container._initialized || !container.resultadoRepo) return "";
 
   try {
-    const resultados = await Resultado.find({ usuario_id: userId }).select("errores");
+    const resultados = await container.resultadoRepo.findByUserId(userId);
 
     // Count error tags across all exercises
     const errorCounts = {};
-    for (let i = 0; i < resultados.length; i++) {
-      const errores = resultados[i].errores;
-      if (errores == null) {
-        continue;
-      }
-      for (let j = 0; j < errores.length; j++) {
-        const tag = errores[j].etiqueta;
-        if (tag != null) {
-          if (errorCounts[tag] == null) {
-            errorCounts[tag] = 1;
-          } 
-          else {
-            errorCounts[tag] = errorCounts[tag] + 1;
-          }
-        }
+    for (const r of resultados) {
+      for (const err of r.errores || []) {
+        const tag = err?.etiqueta;
+        if (tag) errorCounts[tag] = (errorCounts[tag] || 0) + 1;
       }
     }
 
     const tags = Object.keys(errorCounts);
-    if (tags.length === 0) {
-      return "";
-    }
+    if (tags.length === 0) return "";
 
     let text = "[STUDENT HISTORY]\n";
-    text = text + "This student has previously shown these misconceptions:\n";
-    for (let i = 0; i < tags.length; i++) {
-      text = text + "- " + tags[i] + " (" + errorCounts[tags[i]] + " times)\n";
+    text += "This student has previously shown these misconceptions:\n";
+    for (const tag of tags) {
+      text += "- " + tag + " (" + errorCounts[tag] + " times)\n";
     }
-    text = text + "Pay special attention to these recurring errors.\n\n";
+    text += "Pay special attention to these recurring errors.\n\n";
     return text;
   } catch (err) {
     console.error("Error loading student history:", err.message);

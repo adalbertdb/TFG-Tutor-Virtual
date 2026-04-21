@@ -1,14 +1,23 @@
 // routes/ollamaChatRoutes
 const express = require("express");
 const axios = require("axios");
-const mongoose = require("mongoose");
 const fs = require("fs");
 const path = require("path");
 const https = require("https");
 
-const Interaccion = require("../../../infrastructure/persistence/mongodb/models/interaccion");
-const Ejercicio = require("../../../infrastructure/persistence/mongodb/models/ejercicio");
+const container = require("../../../container");
+const Message = require("../../../domain/entities/Message");
 const { buildTutorSystemPrompt } = require("../../../domain/services/promptBuilder");
+
+// Helper: repos from container (fallback path — orchestrator handles most cases)
+function repos() {
+  if (!container._initialized) return null;
+  return {
+    ejercicioRepo: container.ejercicioRepo,
+    interaccionRepo: container.interaccionRepo,
+    messageRepo: container.messageRepo,
+  };
+}
 const { resolveLanguage, getFinishMessages } = require("../../../domain/services/languageManager");
 
 // ⚠️ Recomendación: dotenv se carga UNA vez en index.js.
@@ -79,7 +88,9 @@ function dumpToFile(reqId, label, content) {
 }
 
 function isValidObjectId(x) {
-  return typeof x === "string" && mongoose.Types.ObjectId.isValid(x);
+  if (typeof x !== "string") return false;
+  // Acepta ObjectId (24 hex chars) o UUID (36 chars con guiones)
+  return /^[a-f0-9]{24}$/i.test(x) || /^[0-9a-f-]{36}$/i.test(x);
 }
 
 function normalizeBaseUrl(url) {
@@ -218,13 +229,10 @@ router.get("/health", async (req, res) => {
 // Util: lee SOLO últimos N mensajes (ligero)
 // ==============================
 async function loadLastMessages(interaccionId) {
-  const doc = await Interaccion.findById(interaccionId)
-    .select({ conversacion: 1 })
-    .slice("conversacion", -HISTORY_MAX_MESSAGES)
-    .lean();
-
-  const history = Array.isArray(doc?.conversacion) ? doc.conversacion : [];
-  return history.map((m) => ({ role: m.role, content: m.content }));
+  const r = repos();
+  if (!r) return [];
+  const msgs = await r.messageRepo.getLastMessages(interaccionId, HISTORY_MAX_MESSAGES);
+  return msgs.map((m) => ({ role: m.role, content: m.content }));
 }
 
 // ==============================
@@ -267,18 +275,14 @@ router.post("/chat/stream", async (req, res) => {
     clearInterval(hb);
 
     try {
-      if (typeof fullAssistant === "string" && fullAssistant.trim() !== "") {
-        var msg = { role: "assistant", content: fullAssistant };
-        if (metadata) msg.metadata = metadata;
-        await Interaccion.updateOne(
-          { _id: interaccionId },
-          {
-            $push: { conversacion: msg },
-            $set: { fin: new Date() },
-          }
-        );
-      } else {
-        await Interaccion.updateOne({ _id: interaccionId }, { $set: { fin: new Date() } });
+      const r = repos();
+      if (r) {
+        if (typeof fullAssistant === "string" && fullAssistant.trim() !== "") {
+          await r.messageRepo.appendMessage(interaccionId, new Message({
+            interaccionId, role: "assistant", content: fullAssistant, metadata: metadata || null,
+          }));
+        }
+        await r.interaccionRepo.updateFin(interaccionId, new Date());
       }
     } catch (e) {
       console.error("Error guardando interacción tras stream:", e?.message || e);
@@ -346,7 +350,13 @@ router.post("/chat/stream", async (req, res) => {
 
     // Ejercicio
     const tDb0 = nowMs();
-    const ejercicio = await Ejercicio.findById(exerciseId).lean();
+    const rx = repos();
+    if (!rx) {
+      sseSend(res, { error: "service_unavailable" });
+      clearTimeout(maxTimer);
+      return res.end();
+    }
+    const ejercicio = await rx.ejercicioRepo.findById(exerciseId);
     dlog(reqId, "🗄️ ejercicio", { found: !!ejercicio, ms: nowMs() - tDb0 });
     if (!ejercicio) {
       sseSend(res, { error: "Ejercicio no encontrado." });
@@ -356,32 +366,26 @@ router.post("/chat/stream", async (req, res) => {
 
     // Interacción: cargar o crear
     let iid = interaccionId || null;
-
     if (iid) {
-      // Verify the interaccion exists AND belongs to the authenticated user
-      const exists = await Interaccion.exists({ _id: iid, usuario_id: userId });
+      const exists = await rx.interaccionRepo.existsForUser(iid, userId);
       if (!exists) iid = null;
     }
-
     if (!iid) {
-      const created = await Interaccion.create({
-        usuario_id: userId,
-        ejercicio_id: exerciseId,
-        inicio: new Date(),
-        fin: new Date(),
-        conversacion: [],
+      const created = await rx.interaccionRepo.create({
+        usuarioId: userId,
+        ejercicioId: exerciseId,
       });
-      iid = created._id.toString();
+      iid = created.id;
       sseSend(res, { interaccionId: iid });
       dlog(reqId, "🆕 interaccion creada", iid);
     }
 
     // Guardar mensaje user (atómico)
     const text = userMessage.trim();
-    await Interaccion.updateOne(
-      { _id: iid },
-      { $push: { conversacion: { role: "user", content: text } }, $set: { fin: new Date() } }
-    );
+    await rx.messageRepo.appendMessage(iid, new Message({
+      interaccionId: iid, role: "user", content: text,
+    }));
+    await rx.interaccionRepo.updateFin(iid, new Date());
 
     // ============================
     // ✅ CIERRE DETERMINISTA (SIN LLM)
@@ -571,33 +575,35 @@ router.post("/chat/start-exercise", async (req, res) => {
         ? userMessage.trim()
         : DEFAULT_START_MESSAGE;
 
-    const ejercicio = await Ejercicio.findById(exerciseId).lean();
+    const rx = repos();
+    if (!rx) return res.status(503).json({ message: "service_unavailable" });
+    const ejercicio = await rx.ejercicioRepo.findById(exerciseId);
     if (!ejercicio) return res.status(404).json({ message: "Ejercicio no encontrado." });
 
     // First message: no history yet, default to Spanish
     const systemPrompt = buildSystemPrompt(ejercicio, "es");
 
-    const interaccion = await Interaccion.create({
-      usuario_id: userId,
-      ejercicio_id: exerciseId,
-      inicio: new Date(),
-      fin: new Date(),
-      conversacion: [{ role: "user", content: firstMsg }],
+    const interaccion = await rx.interaccionRepo.create({
+      usuarioId: userId,
+      ejercicioId: exerciseId,
     });
+    await rx.messageRepo.appendMessage(interaccion.id, new Message({
+      interaccionId: interaccion.id, role: "user", content: firstMsg,
+    }));
 
     // ✅ Si el primer mensaje ya es respuesta correcta, cerramos determinista también aquí
     if (isCorrectAnswerForExercise({ userText: firstMsg, ejercicio })) {
       const assistant = `${getFinishMessages("es").exactAnswer}${FIN_TOKEN}`;
 
-      await Interaccion.updateOne(
-        { _id: interaccion._id },
-        { $push: { conversacion: { role: "assistant", content: assistant } }, $set: { fin: new Date() } }
-      );
+      await rx.messageRepo.appendMessage(interaccion.id, new Message({
+        interaccionId: interaccion.id, role: "assistant", content: assistant,
+      }));
+      await rx.interaccionRepo.updateFin(interaccion.id, new Date());
 
       return res.status(201).json({
         message: "Interacción iniciada (resuelta al instante)",
         mode,
-        interaccionId: interaccion._id,
+        interaccionId: interaccion.id,
         assistantMessage: assistant,
         fullHistory: [
           { role: "user", content: firstMsg },
@@ -627,15 +633,15 @@ router.post("/chat/start-exercise", async (req, res) => {
 
     const assistant = ollamaResp?.data?.message?.content ?? "";
 
-    await Interaccion.updateOne(
-      { _id: interaccion._id },
-      { $push: { conversacion: { role: "assistant", content: assistant } }, $set: { fin: new Date() } }
-    );
+    await rx.messageRepo.appendMessage(interaccion.id, new Message({
+      interaccionId: interaccion.id, role: "assistant", content: assistant,
+    }));
+    await rx.interaccionRepo.updateFin(interaccion.id, new Date());
 
     return res.status(201).json({
       message: "Interacción iniciada",
       mode,
-      interaccionId: interaccion._id,
+      interaccionId: interaccion.id,
       assistantMessage: assistant,
       fullHistory: [
         { role: "user", content: firstMsg },

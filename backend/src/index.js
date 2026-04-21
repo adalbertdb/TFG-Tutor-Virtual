@@ -3,10 +3,9 @@ const path = require("path");
 require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
 
 const express = require("express");
-const mongoose = require("mongoose");
 const cors = require("cors");
 const session = require("express-session");
-const MongoStore = require("connect-mongo");
+const PgSession = require("connect-pg-simple")(session);
 const fs = require("fs");
 
 // Rutas
@@ -87,24 +86,26 @@ app.get("/api/debug/static", (_req, res) => {
 // Servido real de estáticos
 app.use("/static", express.static(staticDir, { fallthrough: false }));
 
-// ====== Mongo ======
-mongoose
-  .connect(process.env.MONGODB_URI)
-  .then(() => console.log("Conectado a MongoDB Atlas"))
-  .catch((error) => console.error("Error al conectar a MongoDB:", error));
+// (La conexión a PostgreSQL la gestiona container.initialize() en el callback de listen.)
 
-// ====== Sesión ======
+// ====== Sesión (PostgreSQL) ======
+// La tabla `sessions` es creada por la migración 006_create_sessions.sql.
+// connect-pg-simple gestiona su propio pool interno usando PG_CONNECTION_STRING.
 app.use(
   session({
     name: "sid_irene",
     secret: process.env.SESSION_SECRET,
     resave: false,
     saveUninitialized: false,
-    store: MongoStore.create({ mongoUrl: process.env.MONGODB_URI }),
+    store: new PgSession({
+      conString: process.env.PG_CONNECTION_STRING,
+      tableName: "sessions",
+      createTableIfMissing: false,
+    }),
     cookie: {
       httpOnly: true,
-      // ✅ secure=true en producción (HTTPS/Nginx).
-      // En desarrollo local (DEV_BYPASS_AUTH=true), secure=false para que HTTP funcione.
+      // secure=true en producción (HTTPS/Nginx). En dev local (DEV_BYPASS_AUTH=true),
+      // secure=false para que HTTP funcione.
       secure: process.env.DEV_BYPASS_AUTH !== "true",
       sameSite: "lax",
     },
