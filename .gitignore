@@ -1,6 +1,33 @@
+# Dependencies
 node_modules/
-*.bin
-*.jsonl
-*.sqlite3
+
+# Env & secrets
 *.env
+.env.*
+!.env.example
+
+# Build artifacts
+*.bin
 *.pyc
+__pycache__/
+dist/
+build/
+
+# Backend runtime logs & debug dumps
+backend/logs/
+backend/debug_ollama/
+backend/test_conversations/
+
+# JSON audit logs (created by AUDIT_LOG=1)
+*.jsonl
+
+# Local DBs
+*.sqlite3
+chroma/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp

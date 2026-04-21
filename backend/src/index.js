@@ -18,8 +18,10 @@ const userRoutes = require("./interfaces/http/routes/usuarios");
 const ejerciciosRoutes = require("./interfaces/http/routes/ejercicios");
 const interaccionesRoutes = require("./interfaces/http/routes/interacciones");
 const ollamaChatRoutes = require("./interfaces/http/routes/ollamaChatRoutes");
+const orchestratorMiddleware = require("./interfaces/http/middleware/orchestratorMiddleware");
 const ragMiddleware = require("./interfaces/http/middleware/ragMiddleware");
 const { setupWorkflowSocket } = require("./interfaces/sse/workflowSocket");
+const container = require("./container");
 const resultadoRoutes = require("./interfaces/http/routes/resultados");
 const progresoRoutes = require("./interfaces/http/routes/progresoRoutes");
 const exportRoutes = require("./interfaces/http/routes/exportRoutes");
@@ -124,6 +126,9 @@ app.use("/api", globalAuth);
 app.use("/api/usuarios", userRoutes);
 app.use("/api/ejercicios", ejerciciosRoutes);
 app.use("/api/interacciones", interaccionesRoutes);
+// Orchestrator takes priority when USE_ORCHESTRATOR=1 (Phase 5 refactor).
+// If disabled or unready it calls next() and ragMiddleware handles the request.
+app.use("/api/ollama", orchestratorMiddleware);
 app.use("/api/ollama", ragMiddleware);
 app.use("/api/ollama", ollamaChatRoutes);
 app.use("/api/progreso", progresoRoutes);
@@ -160,6 +165,16 @@ app.get(/^\/(?!api\/|static\/).*/, (req, res) => {
 // ====== Arranque servidor HTTP interno (Nginx hará HTTPS fuera) ======
 const server = app.listen(port, "0.0.0.0", () => {
   console.log(`✅ Backend (HTTP interno) escuchando en puerto ${port}`);
+
+  // Initialize DI container for hex architecture (USE_ORCHESTRATOR=1 route)
+  // Non-blocking: if it fails, the legacy ragMiddleware still serves requests.
+  container.initialize()
+    .then(() => {
+      console.log("[Startup] Hex container ready. USE_ORCHESTRATOR=" + (process.env.USE_ORCHESTRATOR === "1" ? "ON" : "OFF"));
+    })
+    .catch((err) => {
+      console.error("[Startup] Container initialization FAILED — orchestrator route disabled:", err.message);
+    });
 
   // Warmup Ollama (no bloquea)
   const axios = require("axios");

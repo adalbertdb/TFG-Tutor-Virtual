@@ -73,20 +73,24 @@ class TutorAgent extends AgentInterface {
       stuckHint +
       (context.ragResult.augmentation || "");
 
-    // 5. Build messages array
+    // 5. Build messages array (SAVE in context so GuardrailPipeline can use them for consolidated retry)
     const messages = [
       { role: "system", content: augmentedPrompt },
       ...context.history,
     ];
+    context.llmMessages = messages;
 
     debugLogger.logPrompt(augmentedPrompt, context.classification?.type);
 
-    // 6. Call LLM
+    // 6. Call LLM — propagate budget from context if set
     const ollamaStart = Date.now();
+    const elapsed = Date.now() - context.timing.pipelineStartMs;
+    const remainingBudget = context.budgetMs != null ? Math.max(0, context.budgetMs - elapsed) : undefined;
     context.llmResponse = await this.llmService.chatCompletion(messages, {
       temperature: this.config.OLLAMA_TEMPERATURE,
       numPredict: this.config.OLLAMA_NUM_PREDICT,
       numCtx: this.config.OLLAMA_NUM_CTX,
+      budgetMs: remainingBudget,
     });
     context.timing.ollamaMs = Date.now() - ollamaStart;
 

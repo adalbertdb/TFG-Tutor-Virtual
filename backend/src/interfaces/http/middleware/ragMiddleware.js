@@ -452,6 +452,9 @@ router.post("/chat/stream", async function (req, res, next) {
       evaluableElements: evaluableElements,
       lang: earlyLang,
     });
+    // Phase-0 baseline: declare a theoretical budget (not enforced yet; Phase 3 will enforce).
+    // Captures what the refactored pipeline will target — lets us measure overshoot today.
+    trace.traceBudgetSet(reqId, 45000);
 
     // 2b. Input guardrail: block prompt injection / off-topic BEFORE the LLM
     var securityResult = securityService.analyzeInput(userMessage.trim(), {
@@ -795,11 +798,14 @@ router.post("/chat/stream", async function (req, res, next) {
       var guardrailTriggered = false;
 
       // 11a. Check if the LLM revealed the solution (iterative: up to 2 retries)
+      var _tLeak0 = Date.now();
       var leakCheck = checkSolutionLeak(fullResponse, correctAnswer);
+      trace.traceGuardrailCheck(reqId, "solution_leak", { violated: leakCheck.leaked, checkMs: Date.now() - _tLeak0, evidence: leakCheck.details });
       emitEvent("guardrail_leak", "end", { responsePreview: fullResponse, correctAnswer: correctAnswer, result: leakCheck, passed: !leakCheck.leaked, check: "Checks if LLM response reveals the correct answer resistances" });
       for (var leakAttempt = 1; leakAttempt <= 2 && leakCheck.leaked; leakAttempt++) {
         guardrailTriggered = true;
         console.log("[RAG] Guardrail triggered (leak) attempt " + leakAttempt + ": " + leakCheck.details);
+        trace.traceLlmRetry(reqId, "solution_leak", leakAttempt);
         emitEvent("ollama_retry", "start", { reason: "solution_leak", retryCount: leakAttempt });
 
         var strongerPrompt = augmentedPrompt + getStrongerInstruction(lang);
@@ -807,17 +813,22 @@ router.post("/chat/stream", async function (req, res, next) {
         for (let i = 0; i < history.length; i++) {
           retryMessages.push(history[i]);
         }
+        var _tRetry = Date.now();
         fullResponse = await callOllama(retryMessages);
+        trace.traceLlmCall(reqId, "end", { durationMs: Date.now() - _tRetry, responseLen: fullResponse.length, reason: "retry_solution_leak_" + leakAttempt, response: fullResponse });
         emitEvent("ollama_retry", "end", { reason: "solution_leak", responseLength: fullResponse.length });
         leakCheck = checkSolutionLeak(fullResponse, correctAnswer);
       }
 
       // 11b. Check if the LLM confirmed a wrong answer as correct
+      var _tConfirm0 = Date.now();
       var confirmCheck = checkFalseConfirmation(fullResponse, ragResult.classification);
+      trace.traceGuardrailCheck(reqId, "false_confirmation", { violated: confirmCheck.confirmed, checkMs: Date.now() - _tConfirm0, evidence: confirmCheck.details });
       emitEvent("guardrail_false_confirm", "end", { responsePreview: fullResponse, classification: ragResult.classification, result: confirmCheck, passed: !confirmCheck.confirmed, check: "Checks if LLM falsely confirms a wrong answer as correct" });
       if (confirmCheck.confirmed) {
         guardrailTriggered = true;
         console.log("[RAG] Guardrail triggered (false confirm): " + confirmCheck.details);
+        trace.traceLlmRetry(reqId, "false_confirmation", 1);
         emitEvent("ollama_retry", "start", { reason: "false_confirmation", retryCount: 1 });
 
         var confirmPrompt = augmentedPrompt + getFalseConfirmationInstruction(lang);
@@ -825,16 +836,21 @@ router.post("/chat/stream", async function (req, res, next) {
         for (let i = 0; i < history.length; i++) {
           confirmRetry.push(history[i]);
         }
+        var _tCR = Date.now();
         fullResponse = await callOllama(confirmRetry);
+        trace.traceLlmCall(reqId, "end", { durationMs: Date.now() - _tCR, responseLen: fullResponse.length, reason: "retry_false_confirmation", response: fullResponse });
         emitEvent("ollama_retry", "end", { reason: "false_confirmation", responseLength: fullResponse.length });
       }
 
       // 11b2. Check if the LLM prematurely confirms a partially correct answer
+      var _tPrem0 = Date.now();
       var prematureCheck = checkPrematureConfirmation(fullResponse, ragResult.classification);
+      trace.traceGuardrailCheck(reqId, "premature_confirmation", { violated: prematureCheck.premature, checkMs: Date.now() - _tPrem0, evidence: prematureCheck.details });
       emitEvent("guardrail_premature_confirm", "end", { responsePreview: fullResponse, classification: ragResult.classification, result: prematureCheck, passed: !prematureCheck.premature, check: "Checks if LLM prematurely confirms correct answer without reasoning" });
       if (prematureCheck.premature) {
         guardrailTriggered = true;
         console.log("[RAG] Guardrail triggered (premature confirm): " + prematureCheck.details);
+        trace.traceLlmRetry(reqId, "premature_confirmation", 1);
         emitEvent("ollama_retry", "start", { reason: "premature_confirmation", retryCount: 1 });
 
         var partialPrompt = augmentedPrompt + getPartialConfirmationInstruction(lang, ragResult.classification);
@@ -842,7 +858,9 @@ router.post("/chat/stream", async function (req, res, next) {
         for (let i = 0; i < history.length; i++) {
           partialRetry.push(history[i]);
         }
+        var _tPR = Date.now();
         fullResponse = await callOllama(partialRetry);
+        trace.traceLlmCall(reqId, "end", { durationMs: Date.now() - _tPR, responseLen: fullResponse.length, reason: "retry_premature_confirmation", response: fullResponse });
         emitEvent("ollama_retry", "end", { reason: "premature_confirmation", responseLength: fullResponse.length });
       }
 
@@ -851,11 +869,14 @@ router.post("/chat/stream", async function (req, res, next) {
       // name loaded from the knowledge graph. Iterative (up to 2 retries)
       // plus deterministic redaction fallback — the student must discover
       // states themselves, so we prefer a clunky placeholder to a leak.
+      var _tState0 = Date.now();
       var stateCheck = checkStateReveal(fullResponse, evaluableElements, kgConceptPatterns);
+      trace.traceGuardrailCheck(reqId, "state_reveal", { violated: stateCheck.revealed, checkMs: Date.now() - _tState0, evidence: stateCheck.details });
       emitEvent("guardrail_state_reveal", "end", { responsePreview: fullResponse, result: stateCheck, passed: !stateCheck.revealed, check: "Checks if LLM reveals internal element states or KG concepts bound to a specific element" });
       for (var stateAttempt = 1; stateAttempt <= 2 && stateCheck.revealed; stateAttempt++) {
         guardrailTriggered = true;
         console.log("[RAG] Guardrail triggered (state reveal) attempt " + stateAttempt + ": " + stateCheck.details);
+        trace.traceLlmRetry(reqId, "state_reveal", stateAttempt);
         emitEvent("ollama_retry", "start", { reason: "state_reveal", retryCount: stateAttempt });
 
         var statePrompt = augmentedPrompt + getStateRevealInstruction(lang);
@@ -863,7 +884,9 @@ router.post("/chat/stream", async function (req, res, next) {
         for (let i = 0; i < history.length; i++) {
           stateRetry.push(history[i]);
         }
+        var _tSR = Date.now();
         fullResponse = await callOllama(stateRetry);
+        trace.traceLlmCall(reqId, "end", { durationMs: Date.now() - _tSR, responseLen: fullResponse.length, reason: "retry_state_reveal_" + stateAttempt, response: fullResponse });
         emitEvent("ollama_retry", "end", { reason: "state_reveal", responseLength: fullResponse.length });
         stateCheck = checkStateReveal(fullResponse, evaluableElements, kgConceptPatterns);
       }
@@ -871,7 +894,9 @@ router.post("/chat/stream", async function (req, res, next) {
       // 11c-bis. Surgical redaction: if the LLM still reveals state, rewrite
       // the offending sentence only, keeping the rest of the response intact.
       if (stateCheck.revealed) {
+        var _tSurg0 = Date.now();
         var stateRedact = redactStateRevealSentence(fullResponse, evaluableElements, stateCheck.pattern, lang);
+        trace.traceSurgicalFix(reqId, "state_reveal", { applied: stateRedact.redacted, durationMs: Date.now() - _tSurg0, before: fullResponse, after: stateRedact.text });
         if (stateRedact.redacted) {
           guardrailTriggered = true;
           console.log("[RAG] Deterministic state-reveal redaction applied");
@@ -882,11 +907,14 @@ router.post("/chat/stream", async function (req, res, next) {
 
       // 11d. Check if the LLM names specific evaluable elements in questions/directives
       // Iterative: up to 2 retries. Final fallback: deterministic redaction.
+      var _tNaming0 = Date.now();
       var namingCheck = checkElementNaming(fullResponse, evaluableElements);
+      trace.traceGuardrailCheck(reqId, "element_naming", { violated: namingCheck.named, checkMs: Date.now() - _tNaming0, evidence: namingCheck.details });
       emitEvent("guardrail_element_naming", "end", { responsePreview: fullResponse, result: namingCheck, passed: !namingCheck.named, check: "Checks if LLM names specific elements in questions or directives" });
       for (var namingAttempt = 1; namingAttempt <= 2 && namingCheck.named; namingAttempt++) {
         guardrailTriggered = true;
         console.log("[RAG] Guardrail triggered (element naming) attempt " + namingAttempt + ": " + namingCheck.details);
+        trace.traceLlmRetry(reqId, "element_naming", namingAttempt);
         emitEvent("ollama_retry", "start", { reason: "element_naming", retryCount: namingAttempt });
 
         var namingPrompt = augmentedPrompt + getElementNamingInstruction(lang);
@@ -894,7 +922,9 @@ router.post("/chat/stream", async function (req, res, next) {
         for (var ni = 0; ni < history.length; ni++) {
           namingRetry.push(history[ni]);
         }
+        var _tNR = Date.now();
         fullResponse = await callOllama(namingRetry);
+        trace.traceLlmCall(reqId, "end", { durationMs: Date.now() - _tNR, responseLen: fullResponse.length, reason: "retry_element_naming_" + namingAttempt, response: fullResponse });
         emitEvent("ollama_retry", "end", { reason: "element_naming", responseLength: fullResponse.length });
         namingCheck = checkElementNaming(fullResponse, evaluableElements);
       }
@@ -903,7 +933,9 @@ router.post("/chat/stream", async function (req, res, next) {
       // response STILL names correct elements in questions/directives, rewrite
       // them with a generic placeholder. Prefer clunky-but-safe over leaking.
       if (namingCheck.named) {
+        var _tSurgN = Date.now();
         var redactResult = redactElementMentions(fullResponse, correctAnswer, lang);
+        trace.traceSurgicalFix(reqId, "element_naming", { applied: redactResult.redacted, durationMs: Date.now() - _tSurgN, before: fullResponse, after: redactResult.text });
         if (redactResult.redacted) {
           guardrailTriggered = true;
           console.log("[RAG] Deterministic redaction applied (element naming could not be fixed by LLM)");
@@ -917,7 +949,9 @@ router.post("/chat/stream", async function (req, res, next) {
       // they appear outside a question — this catches leaks in statements.
       var finalLeak = checkSolutionLeak(fullResponse, correctAnswer);
       if (finalLeak.leaked) {
+        var _tSurgL = Date.now();
         var redactResult2 = redactElementMentions(fullResponse, correctAnswer, lang);
+        trace.traceSurgicalFix(reqId, "final_leak_safeguard", { applied: redactResult2.redacted, durationMs: Date.now() - _tSurgL, before: fullResponse, after: redactResult2.text });
         if (redactResult2.redacted) {
           guardrailTriggered = true;
           console.log("[RAG] Deterministic redaction applied (final leak safeguard)");
@@ -962,10 +996,13 @@ router.post("/chat/stream", async function (req, res, next) {
       // explain. If the response contains definitional/explanatory patterns
       // ("this means that...", "when a resistor is X, then..."), retry up to
       // 2 times asking for a pure scaffolding question instead.
+      var _tDidactic0 = Date.now();
       var didacticCheck = checkDidacticExplanation(fullResponse);
+      trace.traceGuardrailCheck(reqId, "didactic_explanation", { violated: didacticCheck.explaining, checkMs: Date.now() - _tDidactic0, evidence: didacticCheck.details });
       for (var didacticAttempt = 1; didacticAttempt <= 2 && didacticCheck.explaining; didacticAttempt++) {
         guardrailTriggered = true;
         console.log("[RAG] Guardrail triggered (didactic explanation) attempt " + didacticAttempt + ": " + didacticCheck.details);
+        trace.traceLlmRetry(reqId, "didactic_explanation", didacticAttempt);
         emitEvent("ollama_retry", "start", { reason: "didactic_explanation", retryCount: didacticAttempt });
 
         var scaffoldPrompt = augmentedPrompt + getScaffoldInstruction(lang);
@@ -973,7 +1010,9 @@ router.post("/chat/stream", async function (req, res, next) {
         for (var si = 0; si < history.length; si++) {
           scaffoldRetry.push(history[si]);
         }
+        var _tDR = Date.now();
         fullResponse = await callOllama(scaffoldRetry);
+        trace.traceLlmCall(reqId, "end", { durationMs: Date.now() - _tDR, responseLen: fullResponse.length, reason: "retry_didactic_" + didacticAttempt, response: fullResponse });
         emitEvent("ollama_retry", "end", { reason: "didactic_explanation", responseLength: fullResponse.length });
         didacticCheck = checkDidacticExplanation(fullResponse);
       }
