@@ -82,7 +82,7 @@ router.get("/byExerciseAndUser/:exerciseId/:userId", async (req, res) => {
   }
 });
 
-// 3. Obtener una interacción concreta
+// 3. Obtener una interacción concreta (con conversacion embedded al estilo legacy)
 router.get("/:id", async (req, res) => {
   const r = repo(res); if (!r) return;
   try {
@@ -93,7 +93,13 @@ router.get("/:id", async (req, res) => {
     if (!canAccessUserData(i.usuarioId || i.usuario_id, req)) {
       return res.status(403).json({ message: "No autorizado." });
     }
-    return res.status(200).json(i);
+    // El frontend legacy espera `conversacion` como array embebido (como era
+    // en Mongo). En Pg los mensajes viven en tabla aparte; los cargamos y los
+    // inyectamos aquí para mantener el contrato del API sin tocar React.
+    const messages = await container.messageRepo.getAllMessages(id);
+    const body = i.toJSON();
+    body.conversacion = messages;
+    return res.status(200).json(body);
   } catch (err) {
     return res.status(500).json({ message: err.message });
   }
