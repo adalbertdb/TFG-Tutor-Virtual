@@ -73,14 +73,25 @@ class TutorAgent extends AgentInterface {
       stuckHint +
       (context.ragResult.augmentation || "");
 
-    // 5. Build messages array (SAVE in context so GuardrailPipeline can use them for consolidated retry)
+    // 5. Build messages: system + history + CURRENT user message.
+    //    The current message is NOT yet persisted (PersistenceAgent writes it
+    //    at the end of the pipeline), so we must append it explicitly here or
+    //    the LLM would respond without knowing what the student just said.
     const messages = [
       { role: "system", content: augmentedPrompt },
       ...context.history,
+      { role: "user", content: context.userMessage },
     ];
     context.llmMessages = messages;
 
     debugLogger.logPrompt(augmentedPrompt, context.classification?.type);
+    const trace = require("../../infrastructure/events/pipelineDebugLogger");
+    trace.traceLlmCall(context.reqId, "start", {
+      model: this.config.OLLAMA_MODEL,
+      messagesCount: messages.length,
+      promptLen: augmentedPrompt.length,
+      reason: "primary",
+    });
 
     // 6. Call LLM — propagate budget from context if set
     const ollamaStart = Date.now();
@@ -94,6 +105,12 @@ class TutorAgent extends AgentInterface {
     });
     context.timing.ollamaMs = Date.now() - ollamaStart;
 
+    trace.traceLlmCall(context.reqId, "end", {
+      durationMs: context.timing.ollamaMs,
+      responseLen: (context.llmResponse || "").length,
+      reason: "primary",
+      response: context.llmResponse,
+    });
     debugLogger.logLlmOut(context.llmResponse);
   }
 
