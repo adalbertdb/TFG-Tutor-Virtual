@@ -122,6 +122,53 @@ function getFinishMessages(lang) {
 }
 
 // =====================
+// Deterministic greeting responses (used to handle "hola"/"hi" without an LLM
+// call, which avoids leaking the answer through the legacy fallback handler).
+// =====================
+
+const greetingResponses = {
+  es: {
+    first: [
+      "¡Hola! ¿Por dónde te gustaría empezar a analizar este circuito?",
+      "¡Hola! Cuéntame con tus palabras qué ves en el circuito y por dónde quieres empezar.",
+      "¡Hola! Para empezar, ¿qué identificas en el enunciado y qué crees que se te pide?",
+    ],
+    repeat: [
+      "¡Hola de nuevo! ¿Quieres retomar por donde lo dejaste o probar otro enfoque?",
+      "¡Hola! ¿Qué parte del circuito quieres revisar?",
+    ],
+  },
+  val: {
+    first: [
+      "Hola! Per on t'agradaria començar a analitzar aquest circuit?",
+      "Hola! Conta'm amb les teues paraules què veus al circuit i per on vols començar.",
+      "Hola! Per a començar, què identifiques a l'enunciat i què creus que es demana?",
+    ],
+    repeat: [
+      "Hola de nou! Vols reprendre on ho deixares o provar un altre enfocament?",
+      "Hola! Quina part del circuit vols revisar?",
+    ],
+  },
+  en: {
+    first: [
+      "Hi! Where would you like to start analyzing this circuit?",
+      "Hi! Tell me in your own words what you see in the circuit and where you'd like to start.",
+      "Hi! To get started, what do you identify in the problem statement and what do you think is being asked?",
+    ],
+    repeat: [
+      "Hi again! Want to pick up where you left off, or try a different angle?",
+      "Hi! Which part of the circuit do you want to revisit?",
+    ],
+  },
+};
+
+function getGreetingResponse(lang, isFirstTurn) {
+  const pool = greetingResponses[lang] || greetingResponses.es;
+  const list = isFirstTurn ? pool.first : pool.repeat;
+  return list[Math.floor(Math.random() * list.length)];
+}
+
+// =====================
 // Multi-language pattern dictionaries
 // =====================
 
@@ -684,6 +731,7 @@ module.exports = {
   resolveLanguage,
   getLanguageRules,
   getFinishMessages,
+  getGreetingResponse,
   getStrongerInstruction,
   getFalseConfirmationInstruction,
   getPartialConfirmationInstruction,

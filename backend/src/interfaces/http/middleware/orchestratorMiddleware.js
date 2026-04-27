@@ -19,6 +19,8 @@ function _isValidId(v) {
 }
 const container = require("../../../container");
 const trace = require("../../../infrastructure/events/pipelineDebugLogger");
+const Message = require("../../../domain/entities/Message");
+const { resolveLanguage, getGreetingResponse } = require("../../../domain/services/languageManager");
 
 const router = express.Router();
 const FIN_TOKEN = "<FIN_EJERCICIO>";
@@ -33,6 +35,61 @@ function endSSE(res, hb) {
   res.write("data: [DONE]\n\n");
   if (typeof res.flush === "function") res.flush();
   res.end();
+}
+
+/**
+ * Deterministic greeting handler. Skips both the orchestrator and the legacy
+ * ollamaChatRoutes fallback (which would otherwise call the LLM with the full
+ * 17 KB tutor prompt — including the correct answer — without any guardrails).
+ * Returns a varied canned greeting in the conversation language and persists
+ * both messages so the chat history is consistent.
+ */
+async function handleGreeting(req, res, hb, userId, exerciseId, interaccionId) {
+  const sseHeadersSent = res.headersSent;
+  if (!sseHeadersSent) {
+    res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no");
+    if (typeof res.flushHeaders === "function") res.flushHeaders();
+    res.write(": ok\n\n");
+  }
+
+  let iid = interaccionId || null;
+  if (iid) {
+    const exists = await container.interaccionRepo.existsForUser(iid, userId);
+    if (!exists) iid = null;
+  }
+  let isFirstTurn = false;
+  if (!iid) {
+    const created = await container.interaccionRepo.create({ usuarioId: userId, ejercicioId: exerciseId });
+    iid = created.id;
+    isFirstTurn = true;
+    sseSend(res, { interaccionId: iid });
+  }
+
+  const userText = String(req.body.userMessage || "").trim();
+  await container.messageRepo.appendMessage(iid, new Message({
+    interaccionId: iid, role: "user", content: userText,
+  }));
+
+  // Resolve language from prior turns; fall back to Spanish on first turn.
+  const prior = await container.messageRepo.getLastMessages(iid, 6);
+  if (!isFirstTurn) {
+    isFirstTurn = prior.filter(m => m.isAssistant()).length === 0;
+  }
+  const lang = resolveLanguage(prior.map(m => m.toOllamaFormat()));
+
+  const greeting = getGreetingResponse(lang, isFirstTurn);
+
+  await container.messageRepo.appendMessage(iid, new Message({
+    interaccionId: iid, role: "assistant", content: greeting,
+    metadata: { classification: "greeting", decision: "deterministic_greeting" },
+  }));
+  await container.interaccionRepo.updateFin(iid, new Date());
+
+  sseSend(res, { chunk: greeting });
+  endSSE(res, hb);
 }
 
 const ENABLED = process.env.USE_ORCHESTRATOR === "1";
@@ -54,15 +111,30 @@ router.post("/chat/stream", async function (req, res, next) {
   if (typeof userMessage !== "string" || userMessage.trim() === "") return next();
   if (interaccionId && !_isValidId(interaccionId)) return next();
 
-  // Pre-check: for greetings and off_topic the orchestrator will set
-  // fallthrough=true; defer to the legacy handler BEFORE opening SSE so we
-  // can still call next(). classifyQuery is pure/sync and <1ms.
+  // Pre-check: greetings are handled INLINE with a deterministic response.
+  // We must NOT fall through to ollamaChatRoutes because that path runs the
+  // LLM with the full 17 KB tutor prompt (which contains the correct answer)
+  // and applies NO guardrails — a guaranteed leak vector. classifyQuery is
+  // pure/sync and <1ms.
   try {
     const { classifyQuery } = require("../../../domain/services/rag/queryClassifier");
     const pre = classifyQuery(userMessage.trim(), [], []);
     if (pre && (pre.type === "greeting" || pre.type === "off_topic")) {
-      trace.traceRouteHandler("", "orchestrator_pre_defer_to_fallback", { classification: pre.type });
-      return next();
+      trace.traceRouteHandler("", "orchestrator_greeting_inline", { classification: pre.type });
+      try {
+        await handleGreeting(req, res, null, userId, exerciseId, interaccionId);
+      } catch (err) {
+        trace.traceError("", "greeting", err);
+        try {
+          if (!res.headersSent) {
+            res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+            if (typeof res.flushHeaders === "function") res.flushHeaders();
+          }
+          sseSend(res, { chunk: "¡Hola! ¿Por dónde te gustaría empezar?" });
+          endSSE(res);
+        } catch (_) { /* response may already be in bad state */ }
+      }
+      return;
     }
   } catch (e) {
     // If the pre-check itself fails, keep going — the orchestrator still runs.

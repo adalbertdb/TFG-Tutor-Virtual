@@ -40,8 +40,8 @@ class CompleteSolutionGuardrail extends IGuardrail {
     const correctAnswer = (ctx && ctx.correctAnswer) || [];
     if (correctAnswer.length === 0) return { violated: false };
 
-    const proposed = (ctx && ctx.proposed) || [];
-    const negated = (ctx && ctx.negated) || [];
+    const proposed = (ctx && Array.isArray(ctx.proposed)) ? ctx.proposed : [];
+    const negated = (ctx && Array.isArray(ctx.negated)) ? ctx.negated : [];
 
     const wronglyNegated = negated.filter(function (e) {
       return correctAnswer.indexOf(e) >= 0;

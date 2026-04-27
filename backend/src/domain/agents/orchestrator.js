@@ -177,8 +177,8 @@ class TutoringOrchestrator {
    * exercise prematurely.
    */
   _shouldFinishDeterministically(ctx) {
-    const cls = ctx.classification?.type;
-    const { prevCorrectTurns } = ctx.loopState;
+    const cls = ctx && ctx.classification && ctx.classification.type;
+    const prevCorrectTurns = (ctx && ctx.loopState && ctx.loopState.prevCorrectTurns) || 0;
 
     return cls === "correct_good_reasoning" && prevCorrectTurns >= 2;
   }
