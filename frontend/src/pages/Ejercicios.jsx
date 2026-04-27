@@ -190,7 +190,12 @@ export default function EjerciciosPage() {
   }, [navigate]);
 
   const ejerciciosFiltrados = useMemo(() => {
-    return allEjercicios.filter((ejercicio) => {
+    const extractExerciseNumber = (titulo) => {
+      const match = typeof titulo === "string" ? titulo.match(/\d+/) : null;
+      return match ? parseInt(match[0], 10) : Number.MAX_SAFE_INTEGER;
+    };
+
+    const filtered = allEjercicios.filter((ejercicio) => {
       if (asig && ejercicio.asignatura !== asig) return false;
       if (
         conceptosSeleccionados.length > 0 &&
