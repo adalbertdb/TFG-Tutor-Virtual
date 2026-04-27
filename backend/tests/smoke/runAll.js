@@ -64,8 +64,8 @@ async function guardrailAdapters() {
   const byId = {};
   for (const g of guardrails) byId[g.id] = g;
 
-  record("7 guardrails registered", guardrails.length === 7);
-  record("all have unique ids", Object.keys(byId).length === 7);
+  record("8 guardrails registered", guardrails.length === 8);
+  record("all have unique ids", Object.keys(byId).length === 8);
 
   // Regression: the 4 critical FPs from production logs
   const fc = byId.false_confirmation;
@@ -113,6 +113,33 @@ async function guardrailAdapters() {
   // Surgical fix sanity: SolutionLeakGuardrail should repair a leak
   const fix = sl.surgicalFix("Son R1, R2 y R4 las correctas.", { correctAnswer: ["R1","R2","R4"], lang: "es" });
   record("Surgical fix removes element list", fix && fix.applied === true);
+
+  // CompleteSolutionGuardrail regression: catches confirmation of wrong PARTS.
+  const cs = byId.complete_solution;
+  record(
+    "TP: 'Genial, has tenido en cuenta R4' on negated-correct R4 violates complete_solution",
+    cs.check("Genial, has tenido en cuenta R4. Sigue así.", {
+      correctAnswer: ["R1","R2","R4"], proposed: [], negated: ["R4"], lang: "es",
+    }).violated === true
+  );
+  record(
+    "TP: 'Muy bien, R4 contribuye también' when student gave R3+R4 violates complete_solution",
+    cs.check("Muy bien, R4 contribuye también. ¿Y R3?", {
+      correctAnswer: ["R1","R2","R4"], proposed: ["R3","R4"], negated: [], lang: "es",
+    }).violated === true
+  );
+  record(
+    "FP: clean Socratic question does NOT trigger complete_solution",
+    cs.check("¿Por qué piensas que ese elemento no contribuye?", {
+      correctAnswer: ["R1","R2","R4"], proposed: ["R3"], negated: [], lang: "es",
+    }).violated === false
+  );
+  record(
+    "FP: when student is fully correct, complete_solution does not fire",
+    cs.check("Genial, lo has razonado bien.", {
+      correctAnswer: ["R1","R2","R4"], proposed: ["R1","R2","R4"], negated: [], lang: "es",
+    }).violated === false
+  );
 }
 
 // ─── Section 3: GuardrailPipeline integration ────────────────────────────────

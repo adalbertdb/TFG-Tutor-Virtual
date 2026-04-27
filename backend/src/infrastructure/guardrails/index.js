@@ -8,6 +8,7 @@
 const SolutionLeakGuardrail = require("./SolutionLeakGuardrail");
 const FalseConfirmationGuardrail = require("./FalseConfirmationGuardrail");
 const PrematureConfirmationGuardrail = require("./PrematureConfirmationGuardrail");
+const CompleteSolutionGuardrail = require("./CompleteSolutionGuardrail");
 const StateRevealGuardrail = require("./StateRevealGuardrail");
 const ElementNamingGuardrail = require("./ElementNamingGuardrail");
 const DidacticExplanationGuardrail = require("./DidacticExplanationGuardrail");
@@ -22,6 +23,7 @@ function createDefaultGuardrails() {
     new SolutionLeakGuardrail(),           // high — leaks the answer
     new FalseConfirmationGuardrail(),      // high — confirms a wrong answer
     new PrematureConfirmationGuardrail(),  // high — closes without justification
+    new CompleteSolutionGuardrail(),       // high — validates a wrong PART of the answer
     new StateRevealGuardrail(),            // high — exposes internal state
     new ElementNamingGuardrail(),          // med  — directs attention to specific elements
     new DidacticExplanationGuardrail(),    // med  — explains instead of scaffolding
@@ -34,6 +36,7 @@ module.exports = {
   SolutionLeakGuardrail: SolutionLeakGuardrail,
   FalseConfirmationGuardrail: FalseConfirmationGuardrail,
   PrematureConfirmationGuardrail: PrematureConfirmationGuardrail,
+  CompleteSolutionGuardrail: CompleteSolutionGuardrail,
   StateRevealGuardrail: StateRevealGuardrail,
   ElementNamingGuardrail: ElementNamingGuardrail,
   DidacticExplanationGuardrail: DidacticExplanationGuardrail,

@@ -250,6 +250,12 @@ const confirmPhrases = {
     "estás en el camino correcto", "en el camino correcto",
     "eso es correcto", "bien razonado", "buen análisis",
     "justo", "lo has entendido", "has comprendido",
+    // Superlative confirmations seen in production tutor responses.
+    // ONLY pure praise — never things that could appear in legitimate
+    // Socratic questions ("¿Has considerado X?") or corrective phrases
+    // ("hay que pulir unos detalles", "eso no es así", "no del todo").
+    "genial", "estupendo", "fenomenal", "fantástico", "magnífico",
+    "maravilloso", "excelente",
   ],
   val: [
     "perfecte", "correcte", "exacte", "exactament", "molt bé",
@@ -262,6 +268,8 @@ const confirmPhrases = {
     "estàs en el camí correcte", "en el camí correcte",
     "això és correcte", "ben raonat", "bona anàlisi",
     "ho has entés", "has comprés",
+    "genial", "estupend", "fenomenal", "fantàstic", "magnífic",
+    "meravellós", "excel·lent",
   ],
   en: [
     "perfect", "correct", "exactly", "very good", "well done",
@@ -273,6 +281,7 @@ const confirmPhrases = {
     "you're on the right track", "on the right track", "right track",
     "that is correct", "well reasoned", "good analysis",
     "you've got it", "you understand",
+    "fantastic", "awesome", "amazing", "wonderful", "excellent",
   ],
 };
 
@@ -420,6 +429,37 @@ function getPartialConfirmationInstruction(lang, classificationType) {
     "NO debes decir 'Perfecto', 'Correcto', 'Muy bien' ni nada que valide su razonamiento. " +
     "Reconoce que va encaminado pero cuestiona el concepto erróneo con una pregunta socrática."
   );
+}
+
+// Instruction when the LLM affirms a wrong proposal or wrongly-negated correct
+// element. Different from FalseConfirmation because it carries the SPECIFIC
+// elements the student got wrong, so the retry prompt can be more pointed.
+function getCompleteSolutionInstruction(lang, wronglyNegated, wronglyProposed) {
+  var negList = Array.isArray(wronglyNegated) && wronglyNegated.length > 0 ? wronglyNegated.join(", ") : "";
+  var propList = Array.isArray(wronglyProposed) && wronglyProposed.length > 0 ? wronglyProposed.join(", ") : "";
+
+  if (lang === "val") {
+    var msg = "\n\nCRÍTIC: La teua resposta anterior va validar una part de la resposta de l'alumne que és INCORRECTA. ";
+    if (negList) msg += "L'alumne ha dit que [" + negList + "] NO contribueix(en), però en realitat sí que ho fa(n). ";
+    if (propList) msg += "L'alumne ha proposat [" + propList + "] però eixos elements NO formen part de la solució. ";
+    msg += "NO has de dir 'Genial', 'Has tingut en compte', 'Perfecte', 'Correcte' ni res semblant sobre eixos elements. ";
+    msg += "Reformula la teua resposta amb una pregunta socràtica que ajude l'alumne a reconsiderar eixe element concret SENSE revelar la resposta.";
+    return msg;
+  }
+  if (lang === "en") {
+    var msg = "\n\nCRITICAL: Your previous response validated a part of the student's answer that is INCORRECT. ";
+    if (negList) msg += "The student said [" + negList + "] does NOT contribute, but it actually DOES. ";
+    if (propList) msg += "The student proposed [" + propList + "] but those elements are NOT part of the solution. ";
+    msg += "Do NOT say 'Great', 'You've taken into account', 'Perfect', 'Correct' or anything similar about those elements. ";
+    msg += "Rephrase with a Socratic question that helps the student reconsider that specific element WITHOUT revealing the answer.";
+    return msg;
+  }
+  var msg = "\n\nCRÍTICO: Tu respuesta anterior validó una parte de la respuesta del alumno que es INCORRECTA. ";
+  if (negList) msg += "El alumno ha dicho que [" + negList + "] NO contribuye(n), pero en realidad sí lo hace(n). ";
+  if (propList) msg += "El alumno ha propuesto [" + propList + "] pero esos elementos NO forman parte de la solución. ";
+  msg += "NO debes decir 'Genial', 'Has tenido en cuenta', 'Perfecto', 'Correcto' ni nada similar sobre esos elementos. ";
+  msg += "Reformula tu respuesta con una pregunta socrática que ayude al alumno a reconsiderar ese elemento concreto SIN revelar la respuesta.";
+  return msg;
 }
 
 function getStateRevealInstruction(lang) {
@@ -647,6 +687,7 @@ module.exports = {
   getStrongerInstruction,
   getFalseConfirmationInstruction,
   getPartialConfirmationInstruction,
+  getCompleteSolutionInstruction,
   getStateRevealInstruction,
   getElementNamingInstruction,
   getIntermediateFeedback,

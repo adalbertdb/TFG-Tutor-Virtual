@@ -45,6 +45,10 @@ class GuardrailAgent extends AgentInterface {
       kgConceptPatterns: this.kgConceptPatterns,
       lang: context.lang,
       mentionedElements: context.classification && context.classification.resistances,
+      // CompleteSolutionGuardrail needs proposed/negated separately to detect
+      // partial-wrong answers (e.g. "R4 no contribuye" when R4 IS correct).
+      proposed: (context.classification && context.classification.proposed) || [],
+      negated: (context.classification && context.classification.negated) || [],
     };
 
     const result = await this.pipeline.validate(context.llmResponse, guardrailCtx, {
@@ -69,6 +73,7 @@ class GuardrailAgent extends AgentInterface {
       solutionLeak: anyFor("solution_leak"),
       falseConfirmation: anyFor("false_confirmation"),
       prematureConfirmation: anyFor("premature_confirmation"),
+      completeSolution: anyFor("complete_solution"),
       stateReveal: anyFor("state_reveal"),
       elementNaming: anyFor("element_naming"),
       didacticExplanation: anyFor("didactic_explanation"),

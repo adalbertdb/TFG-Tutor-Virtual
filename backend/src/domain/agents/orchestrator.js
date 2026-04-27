@@ -149,12 +149,16 @@ class TutoringOrchestrator {
    * We ONLY finish when the student has shown good reasoning — never on
    * "correct_no_reasoning" or "correct_wrong_reasoning" alone, even after
    * many turns. This enforces "justify before validating" pedagogically.
+   *
+   * Threshold raised to 2 prior correct turns (was 1) so a single
+   * misclassification of "correct_good_reasoning" can no longer close the
+   * exercise prematurely.
    */
   _shouldFinishDeterministically(ctx) {
     const cls = ctx.classification?.type;
     const { prevCorrectTurns } = ctx.loopState;
 
-    return cls === "correct_good_reasoning" && prevCorrectTurns >= 1;
+    return cls === "correct_good_reasoning" && prevCorrectTurns >= 2;
   }
 
   /**

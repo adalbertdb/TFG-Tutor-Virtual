@@ -8,6 +8,14 @@ const { emitEvent } = require("../../../infrastructure/events/ragEventBus");
 const container = require("../../../container");
 const { getAllPatterns, conceptKeywords: conceptDict, normalizeToSpanish, getIntermediateFeedback } = require("../languageManager");
 
+// Foundational KG concepts to scaffold the tutor's hints when the student is
+// wrong/partial but did NOT use any concept keyword. Picks the building blocks
+// most circuits exercises hinge on.
+const SCAFFOLD_CONCEPTS = [
+  "serie", "paralelo", "cortocircuito", "circuito abierto",
+  "divisor de tensión", "interruptor abierto",
+];
+
 // Format dataset examples as context for the LLM
 function formatExamples(results) {
   if (results.length === 0) {
@@ -367,9 +375,19 @@ async function runPipeline(userMessage, exerciseNum, correctAnswer, userId, eval
       emitEvent("hybrid_search_end", "end", { resultCount: datasetResults.length, topScore: datasetResults.length > 0 ? Math.round(datasetResults[0].score * 10000) / 10000 : 0, results: datasetResults.map(function(r, i) { return { rank: i + 1, index: r.index, score: Math.round(r.score * 10000) / 10000, student: r.student || "", tutor: r.tutor || "" }; }) });
     }
 
-    result.augmentation = formatClassificationHint(classification, correctAnswer, lang) + formatExamples(datasetResults);
+    // KG scaffolding: when the student is wrong but used no concept words, the
+    // tutor still benefits from foundational concepts to anchor a Socratic hint
+    // (current path, divisor de tensión, cortocircuito, interruptor abierto).
+    const kgConcepts = classification.concepts && classification.concepts.length > 0
+      ? classification.concepts
+      : SCAFFOLD_CONCEPTS;
+    emitEvent("kg_search_start", "start", { concepts: kgConcepts });
+    const kgResults = searchKG(kgConcepts).slice(0, 3);
+    emitEvent("kg_search_end", "end", { resultCount: kgResults.length, entries: kgResults.map(function(e) { return { node1: e.node1, relation: e.relation, node2: e.node2, acName: e.acName || null, acDescription: e.acDescription || null, expertReasoning: e.expertReasoning || "", socraticQuestions: e.socraticQuestions || "" }; }) });
+
+    result.augmentation = formatClassificationHint(classification, correctAnswer, lang) + formatKGContext(kgResults) + formatExamples(datasetResults);
     result.decision = "rag_examples";
-    result.sources = datasetResults;
+    result.sources = datasetResults.concat(kgResults);
     return result;
   }
 
@@ -428,9 +446,19 @@ async function runPipeline(userMessage, exerciseNum, correctAnswer, userId, eval
     emitEvent("hybrid_search_start", "start", { query: userMessage, exerciseNum: exerciseNum, topK: config.TOP_K_FINAL });
     var datasetResults = await hybridSearch(userMessage, exerciseNum);
     emitEvent("hybrid_search_end", "end", { resultCount: datasetResults.length, topScore: datasetResults.length > 0 ? Math.round(datasetResults[0].score * 10000) / 10000 : 0, results: datasetResults.map(function(r, i) { return { rank: i + 1, index: r.index, score: Math.round(r.score * 10000) / 10000, student: r.student || "", tutor: r.tutor || "" }; }) });
-    result.augmentation = formatClassificationHint(classification, correctAnswer, lang) + formatExamples(datasetResults);
+
+    // KG scaffolding: partial answers benefit from foundational concepts so the
+    // tutor can ask "what about <concept>?" instead of pointing at a resistor.
+    const kgConcepts = classification.concepts && classification.concepts.length > 0
+      ? classification.concepts
+      : SCAFFOLD_CONCEPTS;
+    emitEvent("kg_search_start", "start", { concepts: kgConcepts });
+    const kgResults = searchKG(kgConcepts).slice(0, 3);
+    emitEvent("kg_search_end", "end", { resultCount: kgResults.length, entries: kgResults.map(function(e) { return { node1: e.node1, relation: e.relation, node2: e.node2, acName: e.acName || null, acDescription: e.acDescription || null, expertReasoning: e.expertReasoning || "", socraticQuestions: e.socraticQuestions || "" }; }) });
+
+    result.augmentation = formatClassificationHint(classification, correctAnswer, lang) + formatKGContext(kgResults) + formatExamples(datasetResults);
     result.decision = "rag_examples";
-    result.sources = datasetResults;
+    result.sources = datasetResults.concat(kgResults);
     return result;
   }
 
