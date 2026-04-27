@@ -190,6 +190,11 @@ export default function EjerciciosPage() {
   }, [navigate]);
 
   const ejerciciosFiltrados = useMemo(() => {
+    const CONCEPT_ORDER = ["Ley de Ohm", "Semiconductores", "Polarización", "Norton", "Thevenin"];
+    const conceptRank = (c) => {
+      const i = CONCEPT_ORDER.indexOf(c);
+      return i === -1 ? Number.MAX_SAFE_INTEGER : i;
+    };
     const extractExerciseNumber = (titulo) => {
       const match = typeof titulo === "string" ? titulo.match(/\d+/) : null;
       return match ? parseInt(match[0], 10) : Number.MAX_SAFE_INTEGER;
@@ -207,11 +212,11 @@ export default function EjerciciosPage() {
     });
 
     return filtered.sort((a, b) => {
+      const ca = conceptRank(a.concepto) - conceptRank(b.concepto);
+      if (ca !== 0) return ca;
       const na = extractExerciseNumber(a.titulo);
       const nb = extractExerciseNumber(b.titulo);
       if (na !== nb) return na - nb;
-      const ca = (a.concepto || "").localeCompare(b.concepto || "");
-      if (ca !== 0) return ca;
       return (a.nivel || 0) - (b.nivel || 0);
     });
   }, [allEjercicios, asig, conceptosSeleccionados, nivel]);
