@@ -25,8 +25,23 @@ class StateRevealGuardrail extends IGuardrail {
 
   check(response, ctx) {
     if (typeof response !== "string") return { violated: false };
-    const evaluableElements = (ctx && ctx.evaluableElements) || [];
+    const ctxElements = (ctx && ctx.evaluableElements) || [];
     const kgPatterns = (ctx && ctx.kgConceptPatterns) || [];
+
+    // Fallback: if the exercise's elementosEvaluables is empty or missing
+    // some elements, also check any R\d+ tokens that appear in the response.
+    // Revealing the state of an element is harmful regardless of whether the
+    // domain registered it as "evaluable".
+    const regexElements = (response.match(/R\d+/gi) || []).map(function (s) { return s.toUpperCase(); });
+    const seen = {};
+    const evaluableElements = [];
+    for (let i = 0; i < ctxElements.length; i++) {
+      const e = String(ctxElements[i]).toUpperCase();
+      if (!seen[e]) { seen[e] = true; evaluableElements.push(ctxElements[i]); }
+    }
+    for (let i = 0; i < regexElements.length; i++) {
+      if (!seen[regexElements[i]]) { seen[regexElements[i]] = true; evaluableElements.push(regexElements[i]); }
+    }
     if (evaluableElements.length === 0) return { violated: false };
 
     const sentences = splitSentencesKeepEnd(response);

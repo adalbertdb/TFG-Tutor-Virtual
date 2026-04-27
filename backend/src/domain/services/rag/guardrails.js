@@ -314,18 +314,44 @@ function getStrongerInstruction(lang) {
 // Guardrail 5: Element Naming in Questions (generic)
 // =====================
 
-// Directive verbs that indicate the tutor is pointing the student to a specific element
+// Directive verbs/phrases that indicate the tutor is pointing the student to
+// a specific element. Includes the obvious imperatives plus the "let's focus
+// on", "let's discuss", "now think about" framings the LLM often uses to
+// sneak in element naming as a soft directive.
 var directivePatterns = [
   /\b(analiza|observa|mira|fíjate en|considera|piensa en|revisa|examina|estudia)\b/i,
   /\b(look at|consider|analyze|think about|observe|examine|study|check)\b/i,
   /\b(analitza|observa|fixa't en|considera|pensa en|revisa|examina)\b/i,
+  // "Vamos a / centrémonos / hablemos / concentrémonos / pensemos / veamos"
+  /\b(vamos a|centrémonos|hablemos|concentrémonos|pensemos|veamos|enfoqu[eé]monos|enfoc[ae]rnos)\b/i,
+  // English variants: "let's focus", "let's talk", "now think", "let's analyze"
+  /\b(let'?s focus|let'?s talk|let'?s analyze|let'?s consider|let'?s look|now think)\b/i,
+  // Valencian variants
+  /\b(centrem-nos|parlem|pensem|vegem|enfoquem-nos)\b/i,
 ];
 
 // Check if the tutor names a specific evaluable element in a question or directive
 function checkElementNaming(response, evaluableElements) {
-  if (!Array.isArray(evaluableElements) || evaluableElements.length === 0) {
+  // Fallback: if the exercise's elementosEvaluables is empty or missing some
+  // elements, also check any R\d+ tokens in the response. Naming a specific
+  // element in a question/directive is anti-Socratic regardless of whether
+  // the domain registered it as "evaluable".
+  var regexElements = (response.match(/R\d+/gi) || []).map(function (s) { return s.toUpperCase(); });
+  var seen = {};
+  var elements = [];
+  if (Array.isArray(evaluableElements)) {
+    for (var i = 0; i < evaluableElements.length; i++) {
+      var e = String(evaluableElements[i]).toUpperCase();
+      if (!seen[e]) { seen[e] = true; elements.push(evaluableElements[i]); }
+    }
+  }
+  for (var k = 0; k < regexElements.length; k++) {
+    if (!seen[regexElements[k]]) { seen[regexElements[k]] = true; elements.push(regexElements[k]); }
+  }
+  if (elements.length === 0) {
     return { named: false, details: "" };
   }
+  evaluableElements = elements;
 
   // Split into sentences
   var sentences = response.split(/(?<=[.!?\n])\s*/);

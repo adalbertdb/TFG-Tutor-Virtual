@@ -18,7 +18,10 @@ class ElementNamingGuardrail extends IGuardrail {
   check(response, ctx) {
     if (typeof response !== "string") return { violated: false };
     const evaluableElements = (ctx && ctx.evaluableElements) || [];
-    if (evaluableElements.length === 0) return { violated: false };
+    // No early return on empty evaluableElements: checkElementNaming has a
+    // regex fallback that extracts R\d+ from the response itself, so we can
+    // still catch obvious naming violations even when the exercise's
+    // elementosEvaluables is incomplete or missing in the DB.
     const { checkElementNaming } = require("../../domain/services/rag/guardrails");
     const r = checkElementNaming(response, evaluableElements);
     if (!r || !r.named) return { violated: false };

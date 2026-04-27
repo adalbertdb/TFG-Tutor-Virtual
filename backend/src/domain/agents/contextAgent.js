@@ -101,16 +101,14 @@ class ContextAgent extends AgentInterface {
   }
 
   _resolveLanguage(history) {
-    // Simple heuristic: check last few messages for Valencian/English indicators
-    const text = history
-      .slice(-4)
-      .map((m) => m.content)
-      .join(" ")
-      .toLowerCase();
-
-    if (/\b(the|is|are|how|what|why|because)\b/.test(text)) return "en";
-    if (/\b(és|però|perquè|resistènci|aquest)\b/.test(text)) return "val";
-    return "es";
+    // Delegate to the conservative resolver: only USER messages are inspected,
+    // and the switch must be EXPLICIT (e.g. "parla en valencià", "speak in
+    // english"). This prevents the previous bug where the tutor accidentally
+    // emitting one Catalan word ("però") permanently flipped the conversation
+    // to Valencian — which would also swap the system prompt to Valencian and
+    // make the LLM keep responding in Valencian.
+    const { resolveLanguage } = require("../services/languageManager");
+    return resolveLanguage(history);
   }
 
   async _countClassifications(interaccionId, types) {
