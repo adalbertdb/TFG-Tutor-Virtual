@@ -143,6 +143,9 @@ const container = {
       buildSystemPrompt: buildTutorSystemPrompt,
       logInteraction: logInteraction,
       emitEvent: emitEvent,
+      // Hex compliance: inject the pipeline logger so domain agents don't
+      // require("../../infrastructure/...") at module top-level.
+      debugLogger: trace,
       config: ragConfig,
     });
     this.orchestrator = new TutoringOrchestrator(this.agents, { emitEvent: emitEvent });

@@ -90,6 +90,9 @@ class ContextAgent extends AgentInterface {
 
     const tutorRepeating = this._detectRepetition(lastAssistantMessages);
     const studentFrustrated = this._detectFrustration(context.userMessage);
+    const lastClassificationStreak = await this._lastClassificationStreak(
+      context.interaccionId
+    );
 
     context.loopState = {
       prevCorrectTurns,
@@ -97,7 +100,40 @@ class ContextAgent extends AgentInterface {
       totalAssistantTurns,
       tutorRepeating,
       studentFrustrated,
+      // { type, streak } — how many consecutive prior assistant turns shared
+      // the same classification. Used by TutorAgent to escalate strategy
+      // when the same situation repeats (e.g. correct_no_reasoning x3).
+      lastClassification: lastClassificationStreak.type,
+      sameClassificationStreak: lastClassificationStreak.streak,
     };
+  }
+
+  /**
+   * Count how many of the most recent assistant messages share the SAME
+   * metadata.classification value, walking backwards from the end of the
+   * conversation. Returns { type, streak }. If there are no assistant
+   * messages with classification metadata, returns { type: null, streak: 0 }.
+   */
+  async _lastClassificationStreak(interaccionId) {
+    const all = await this.messageRepo.getAllMessages(interaccionId);
+    let last = null;
+    let streak = 0;
+    for (let i = all.length - 1; i >= 0; i--) {
+      const m = all[i];
+      if (!m.isAssistant() || !m.metadata || !m.metadata.classification) continue;
+      const cls = m.metadata.classification;
+      if (last === null) {
+        last = cls;
+        streak = 1;
+        continue;
+      }
+      if (cls === last) {
+        streak++;
+      } else {
+        break;
+      }
+    }
+    return { type: last, streak };
   }
 
   _resolveLanguage(history) {

@@ -2,9 +2,15 @@
 node_modules/
 
 # Env & secrets
+.env
 *.env
 .env.*
 !.env.example
+# Certificates / private keys NUNCA en repo (mover a env vars o secret manager)
+*.pem
+*.key
+*.csr
+backend/src/certs/
 
 # Build artifacts
 *.bin
@@ -12,18 +18,28 @@ node_modules/
 __pycache__/
 dist/
 build/
+coverage/
 
-# Backend runtime logs & debug dumps
+# Runtime logs & debug dumps (cualquier ubicación)
+logs/
 backend/logs/
 backend/debug_ollama/
 backend/test_conversations/
 
-# JSON audit logs (created by AUDIT_LOG=1)
+# JSON audit logs (creados por AUDIT_LOG=1)
 *.jsonl
 
-# Local DBs
+# Local DBs / vector stores (Chroma persistente — datos runtime, no código)
 *.sqlite3
 chroma/
+backend/chroma/
+
+# Scripts ad-hoc / artefactos one-shot
+backend/testchat*.js
+backend/src/scripts/*.xlsx
+
+# Datasets/benchmarks generados
+evaluation/results/
 
 # Editor / OS
 .vscode/
@@ -31,3 +47,9 @@ chroma/
 .DS_Store
 Thumbs.db
 *.swp
+
+# Claude Code local state (settings, agents, transcripts)
+.claude/
+
+# Scripts locales de actualización (no van al servidor)
+apply-updates.ps1

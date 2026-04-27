@@ -12,6 +12,8 @@
 // guardrails.*, timing.*, sourcesCount, isCorrectAnswer, decision.
 
 const express = require("express");
+const fs = require("fs");
+const path = require("path");
 // ID validator accepting ObjectId (legacy) or UUID (new).
 function _isValidId(v) {
   if (typeof v !== "string") return false;
@@ -19,8 +21,80 @@ function _isValidId(v) {
 }
 const container = require("../../../container");
 const trace = require("../../../infrastructure/events/pipelineDebugLogger");
+const ragBus = require("../../../infrastructure/events/ragEventBus");
 const Message = require("../../../domain/entities/Message");
 const { resolveLanguage, getGreetingResponse } = require("../../../domain/services/languageManager");
+
+// DEBUG_DUMP_CONTEXT — replica de ollamaChatRoutes.dumpToFile() para que el
+// dump funcione también bajo USE_ORCHESTRATOR=1. Sin esto, /tmp/tv_dump
+// quedaba vacío en local porque la ruta legacy no se ejecutaba.
+const DEBUG_DUMP_CONTEXT = process.env.DEBUG_DUMP_CONTEXT === "1";
+const DEBUG_DUMP_PATH = process.env.DEBUG_DUMP_PATH || "./debug_ollama";
+
+function dumpToFile(reqId, label, content) {
+  if (!DEBUG_DUMP_CONTEXT) return;
+  try {
+    if (!fs.existsSync(DEBUG_DUMP_PATH)) fs.mkdirSync(DEBUG_DUMP_PATH, { recursive: true });
+    const filename = path.join(
+      DEBUG_DUMP_PATH,
+      new Date().toISOString().replace(/[:.]/g, "-") + "_" + reqId + "_" + label + ".txt"
+    );
+    fs.writeFileSync(filename, content, "utf8");
+  } catch (err) {
+    console.warn("[Orchestrator dump] failed to write " + label + ":", err.message);
+  }
+}
+
+function dumpOrchestratorContext(reqId, ctx) {
+  if (!DEBUG_DUMP_CONTEXT) return;
+  // 1) Prompt (system message del LLM): EXACTAMENTE lo que recibió Ollama.
+  const systemMsg = (ctx.llmMessages && ctx.llmMessages[0] && ctx.llmMessages[0].content) || "";
+  dumpToFile(reqId, "prompt", systemMsg);
+
+  // 2) Messages array completo (system + history + user actual).
+  dumpToFile(reqId, "messages", JSON.stringify(ctx.llmMessages || [], null, 2));
+
+  // 3) Snapshot del context (clasificación, ragResult, guardrails, timing).
+  //    No volcamos el ejercicio entero (puede ser grande); solo lo esencial.
+  const summary = {
+    reqId: reqId,
+    userId: ctx.userId,
+    exerciseId: ctx.exerciseId,
+    exerciseNum: ctx.exerciseNum,
+    interaccionId: ctx.interaccionId,
+    userMessage: ctx.userMessage,
+    lang: ctx.lang,
+    classification: ctx.classification,
+    detectedConcepts: (ctx.classification && ctx.classification.concepts) || [],
+    ac_refs: (ctx.ejercicio && ctx.ejercicio.tutorContext && ctx.ejercicio.tutorContext.ac_refs) || [],
+    correctAnswer: ctx.correctAnswer,
+    evaluableElements: ctx.evaluableElements,
+    loopState: ctx.loopState,
+    ragResult: {
+      decision: ctx.ragResult && ctx.ragResult.decision,
+      sourcesCount: (ctx.ragResult && ctx.ragResult.sources && ctx.ragResult.sources.length) || 0,
+      augmentationLength: (ctx.ragResult && ctx.ragResult.augmentation && ctx.ragResult.augmentation.length) || 0,
+      augmentation: (ctx.ragResult && ctx.ragResult.augmentation) || "",
+    },
+    budget: {
+      totalMs: ctx.budgetMs,
+      retrievalSliceMs: ctx.retrievalBudgetMs,
+      tutorSliceMs: ctx.tutorBudgetMs,
+      guardrailSliceMs: ctx.guardrailBudgetMs,
+    },
+    timing: ctx.timing,
+    guardrailsTriggered: ctx.guardrailsTriggered,
+    guardrailPath: ctx.guardrailPath,
+    guardrailLlmRetries: ctx.guardrailLlmRetries,
+    guardrailSurgicalFixes: ctx.guardrailSurgicalFixes,
+    llmResponse: ctx.llmResponse,
+    finalResponse: ctx.finalResponse,
+    fallbackUsed: ctx.fallbackUsed,
+    deterministicFinish: ctx.deterministicFinish,
+    error: ctx.error ? { message: ctx.error.message, stack: ctx.error.stack } : null,
+  };
+  dumpToFile(reqId, "summary", JSON.stringify(summary, null, 2));
+}
 
 const router = express.Router();
 const FIN_TOKEN = "<FIN_EJERCICIO>";
@@ -143,6 +217,11 @@ router.post("/chat/stream", async function (req, res, next) {
   const reqId = trace.traceRequestStart("orchestrator", {
     userId: userId, exerciseId: exerciseId, interaccionId: interaccionId, userMessage: userMessage,
   });
+  // Tag every ragBus event emitted during this request so the SSE listener
+  // below can filter by reqId. ragBus.setRequestId is a global singleton —
+  // safe under Node's single-threaded model because the orchestrator pipeline
+  // is fully awaited within this handler.
+  ragBus.setRequestId(reqId);
   // Default 30s. Lower than the previous 45s so we fail fast when Ollama is
   // slow under load — better UX to show a fallback than to keep the user
   // staring at a spinner that ultimately times out at the SSE layer too.
@@ -161,6 +240,25 @@ router.post("/chat/stream", async function (req, res, next) {
     res.write(": ping\n\n");
     if (typeof res.flush === "function") res.flush();
   }, 15000);
+
+  // Forward intermediate pipeline events to the SSE client. Without this the
+  // user only sees the final chunk after 5-30s of silence. ragBus is a global
+  // singleton so we filter by reqId to avoid leaking events from concurrent
+  // requests. Frontends that don't recognise `phase` payloads simply ignore
+  // them — additive change, no breaking contract.
+  const onRagEvent = (envelope) => {
+    if (!envelope || envelope.requestId !== reqId) return;
+    try {
+      sseSend(res, {
+        phase: envelope.event,
+        status: envelope.status,
+        ts: envelope.timestamp,
+        data: envelope.data,
+      });
+    } catch (_) { /* response may already be closed */ }
+  };
+  ragBus.on("rag", onRagEvent);
+  const detachRagListener = () => ragBus.off("rag", onRagEvent);
 
   try {
     // Pre-create Interaccion if needed so we can emit interaccionId early
@@ -193,6 +291,7 @@ router.post("/chat/stream", async function (req, res, next) {
       // Let the legacy handler take over
       trace.traceRagGate(reqId, "orchestrator_fallthrough", { reason: "fallthrough flag set" });
       clearInterval(hb);
+      detachRagListener();
       // NOTE: headers already sent, so we can't call next(). Send a minimal "try again" chunk.
       // In practice fallthrough should happen BEFORE SSE headers are sent.
       // For greetings we still want to stream — defer to ragMiddleware by ending here.
@@ -222,6 +321,12 @@ router.post("/chat/stream", async function (req, res, next) {
       response: responseText,
     });
 
+    // Dump prompt + messages + summary al disco si DEBUG_DUMP_CONTEXT=1.
+    // Tres archivos por request: <ts>_<reqId>_prompt.txt, _messages.txt,
+    // _summary.txt en DEBUG_DUMP_PATH (default /tmp/tv_dump en linux).
+    dumpOrchestratorContext(reqId, ctx);
+
+    detachRagListener();
     endSSE(res, hb);
 
     trace.traceRequestEnd(reqId, {
@@ -234,6 +339,7 @@ router.post("/chat/stream", async function (req, res, next) {
     });
   } catch (err) {
     clearInterval(hb);
+    detachRagListener();
     trace.traceError(reqId, "orchestrator", err);
     console.error("[Orchestrator HTTP] Error:", err && err.message);
     try {

@@ -46,6 +46,17 @@ class TutoringOrchestrator {
   async process(request) {
     const ctx = new AgentContext(request);
 
+    // P1c — Budget split per stage. Without this, if retrieval is slow (BM25 +
+    // semantic + KG) it eats the whole budget and tutorAgent gets <0ms left,
+    // returning a fallback message. Distribution: retrieval ≤30%, tutor ≤60%,
+    // guardrails ≤10%. Each agent that supports a budget reads its slice; the
+    // ones that don't (retrieval today) just log when they exceed it.
+    if (typeof ctx.budgetMs === "number" && ctx.budgetMs > 0) {
+      ctx.retrievalBudgetMs = Math.max(2000, Math.floor(ctx.budgetMs * 0.30));
+      ctx.tutorBudgetMs     = Math.max(5000, Math.floor(ctx.budgetMs * 0.60));
+      ctx.guardrailBudgetMs = Math.max(2000, Math.floor(ctx.budgetMs * 0.10));
+    }
+
     try {
       // Stage 1: Load context
       this.emitEvent("agent_start", "context", { agent: "contextAgent" });
@@ -91,14 +102,27 @@ class TutoringOrchestrator {
       // Stage 3: Retrieve
       this.emitEvent("agent_start", "retrieve", {
         agent: "retrievalAgent",
+        budgetMs: ctx.retrievalBudgetMs,
       });
+      const retrievalStart = Date.now();
       if (!this.agents.retrieval.canSkip(ctx)) {
         await this.agents.retrieval.execute(ctx);
+      }
+      const retrievalElapsed = Date.now() - retrievalStart;
+      const retrievalOverBudget =
+        ctx.retrievalBudgetMs && retrievalElapsed > ctx.retrievalBudgetMs;
+      if (retrievalOverBudget) {
+        console.warn(
+          "[Orchestrator] retrieval exceeded budget: elapsed=" + retrievalElapsed +
+          "ms slice=" + ctx.retrievalBudgetMs + "ms reqId=" + (ctx.reqId || "")
+        );
       }
       this.emitEvent("agent_end", "retrieve", {
         agent: "retrievalAgent",
         decision: ctx.ragResult?.decision,
         sourcesCount: ctx.ragResult?.sources?.length || 0,
+        elapsedMs: retrievalElapsed,
+        overBudget: retrievalOverBudget || false,
       });
 
       // Check for deterministic finish

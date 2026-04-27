@@ -183,20 +183,25 @@ async function pipelineIntegration() {
   const r3 = await runCase("Son R1, R2 y R4 las correctas.", { ...ctxBase, classification: "correct_no_reasoning" }, []);
   record("Leak → surgical_ok, 0 LLM retries", r3.path === "surgical_ok" && r3.llmRetryCount === 0);
 
+  // After C4 (DidacticExplanationGuardrail.surgicalFix), didactic responses
+  // are repaired surgically without an LLM retry — the response is reduced
+  // to its existing question(s) or replaced with a rotating fallback.
   const r4 = await runCase(
-    "Esto significa que cuando una resistencia está en corto, no pasa.",
+    "Esto significa que cuando una resistencia está en corto, no pasa. ¿Qué crees que pasa con la corriente?",
     ctxBase,
-    ["¿Qué pasa con la corriente cuando miras el circuito?"]
+    [] // no LLM retry expected
   );
-  record("Didactic → llm_retry_ok, 1 LLM retry", r4.path === "llm_retry_ok" && r4.llmRetryCount === 1);
+  record("Didactic with embedded question → surgical_ok, 0 LLM retries (C4)",
+    r4.path === "surgical_ok" && r4.llmRetryCount === 0);
 
+  // Pure didactic with no embedded question → still surgical_ok (fallback question).
   const r5 = await runCase(
-    "Esto significa que cuando una resistencia está en corto, no pasa.",
+    "Esto significa que cuando una resistencia está en corto, no pasa la corriente por ella.",
     ctxBase,
-    ["never_called"],
-    5000 // budget too low
+    [] // surgical fallback fires; no LLM retry
   );
-  record("Low budget → budget_exhausted, 0 LLM calls", r5.path === "budget_exhausted");
+  record("Didactic without question → surgical_ok via fallback (C4)",
+    r5.path === "surgical_ok" && r5.llmRetryCount === 0);
 }
 
 // ─── Section 4: ILlmService contract ─────────────────────────────────────────

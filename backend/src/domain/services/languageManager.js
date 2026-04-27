@@ -303,6 +303,11 @@ const confirmPhrases = {
     // ("hay que pulir unos detalles", "eso no es así", "no del todo").
     "genial", "estupendo", "fenomenal", "fantástico", "magnífico",
     "maravilloso", "excelente",
+    // Bare affirmative openers that validate a wrong answer when the tutor
+    // starts with them. Word-boundary match prevents matching inside other
+    // words (e.g. "siempre" is not "sí"). NegationDetector still skips them
+    // when preceded by "no" / "tampoco".
+    "sí", "si", "claro", "obvio",
   ],
   val: [
     "perfecte", "correcte", "exacte", "exactament", "molt bé",
@@ -317,6 +322,7 @@ const confirmPhrases = {
     "ho has entés", "has comprés",
     "genial", "estupend", "fenomenal", "fantàstic", "magnífic",
     "meravellós", "excel·lent",
+    "sí", "si", "clar", "obvi",
   ],
   en: [
     "perfect", "correct", "exactly", "very good", "well done",
@@ -329,6 +335,7 @@ const confirmPhrases = {
     "that is correct", "well reasoned", "good analysis",
     "you've got it", "you understand",
     "fantastic", "awesome", "amazing", "wonderful", "excellent",
+    "yes", "sure", "clear",
   ],
 };
 
@@ -343,6 +350,19 @@ const stateRevealPatterns = {
     "tiene diferencia de potencial cero",
     "no tiene caída de tensión",
     "ambos terminales", "mismo nudo", "mismo punto",
+    // Variants the LLM produces in real tutor responses (caught by diagnose.js).
+    "está en corto", "queda en corto", "queda cortocircuitad",
+    "se cortocircuita", "se cortocircuit",
+    "interruptor abierto", "interruptor cerrado",
+    "switch abierto", "switch cerrado",
+    "está abierto entre", "está cerrado entre",
+    // Bare "está abierto"/"está cerrado" only fires when the surrounding
+    // sentence also names an element (StateRevealGuardrail requires it),
+    // so this avoids false positives on conceptual questions like
+    // "¿qué pasa si el camino está abierto?".
+    "está abierto", "está cerrado",
+    "los dos terminales unidos", "terminales unidos",
+    "no opone resistencia",
   ],
   val: [
     "està curtcircuitad", "està en curtcircuit",
@@ -354,6 +374,12 @@ const stateRevealPatterns = {
     "té diferència de potencial zero",
     "no té caiguda de tensió",
     "ambdós terminals", "mateix nus", "mateix punt",
+    "està en curt", "queda en curt", "queda curtcircuitad",
+    "es curtcircuita",
+    "interruptor obert", "interruptor tancat",
+    "està obert entre", "està tancat entre",
+    "els dos terminals units", "terminals units",
+    "no oposa resistència",
   ],
   en: [
     "is short circuited", "is shorted", "is short-circuited",
@@ -365,6 +391,11 @@ const stateRevealPatterns = {
     "has zero potential difference",
     "has no voltage drop",
     "both terminals", "same node", "same point",
+    "is short", "becomes short", "gets shorted",
+    "switch is open", "switch is closed",
+    "is open between", "is closed between",
+    "terminals tied", "terminals connected together",
+    "offers no resistance",
   ],
 };
 
@@ -622,28 +653,61 @@ function getRandomIntermediatePhrase(type, lang) {
 // Element naming guardrail instruction (generic, not resistance-specific)
 // =====================
 
+// Pool of CONCEPT-LEVEL example questions used inside the element_naming
+// retry hint. Rotated every call so the LLM cannot just copy the same example
+// verbatim into its next response (which is what produced the visible
+// infinite loop with gemma3:27b in the original conversations).
+const _conceptExamplesByLang = {
+  es: [
+    "el recorrido de la corriente desde la fuente hasta tierra",
+    "qué pasa cuando dos puntos están al mismo potencial",
+    "cómo se distribuye la tensión en una rama con varios componentes",
+    "qué efecto tiene un camino sin resistencia entre dos nodos",
+    "qué condición debe cumplirse para que una rama no transporte corriente",
+  ],
+  val: [
+    "el recorregut del corrent des de la font fins a terra",
+    "què passa quan dos punts estan al mateix potencial",
+    "com es distribueix la tensió en una branca amb diversos components",
+    "quin efecte té un camí sense resistència entre dos nodes",
+    "quina condició s'ha de complir perquè una branca no transporte corrent",
+  ],
+  en: [
+    "the path of current from the source to ground",
+    "what happens when two points share the same potential",
+    "how voltage is distributed across a branch with several components",
+    "the effect of a path with no resistance between two nodes",
+    "what condition must hold for a branch to carry no current",
+  ],
+};
+
+function _pickConceptExample(lang) {
+  const pool = _conceptExamplesByLang[lang] || _conceptExamplesByLang.es;
+  return pool[Math.floor(Math.random() * pool.length)];
+}
+
 function getElementNamingInstruction(lang) {
   if (lang === "val") {
     return (
       "\n\nCRÍTIC: La teua resposta anterior NOMENA un element concret en una pregunta o directiva. " +
       "MAI has de senyalar un element específic perquè l'alumne l'analitze (ex: '¿Què passa amb R5?', 'Observa R3'). " +
-      "En el seu lloc, fes preguntes sobre CONCEPTES generals: el recorregut del corrent, " +
-      "quines condicions es necessiten perquè circule corrent per una branca, etc."
+      "En el seu lloc, fes una pregunta sobre un CONCEPTE general (per exemple: " + _pickConceptExample("val") + "). " +
+      "Reformula la teua frase usant aquest concepte i NO copies l'exemple textualment."
     );
   }
   if (lang === "en") {
     return (
       "\n\nCRITICAL: Your previous response NAMES a specific element in a question or directive. " +
       "NEVER point to a specific element for the student to analyze (e.g., 'What about R5?', 'Look at R3'). " +
-      "Instead, ask questions about general CONCEPTS: the path of current, " +
-      "what conditions are needed for current to flow through a branch, etc."
+      "Instead, ask a question about a general CONCEPT (for example: " + _pickConceptExample("en") + "). " +
+      "Rephrase using this concept and DO NOT copy the example verbatim."
     );
   }
   return (
     "\n\nCRÍTICO: Tu respuesta anterior NOMBRA un elemento concreto en una pregunta o directiva. " +
     "NUNCA debes señalar un elemento específico para que el alumno lo analice (ej: '¿Qué pasa con R5?', 'Observa R3'). " +
-    "En su lugar, haz preguntas sobre CONCEPTOS generales: el recorrido de la corriente, " +
-    "qué condiciones se necesitan para que circule corriente por una rama, etc."
+    "En su lugar, haz una pregunta sobre un CONCEPTO general (por ejemplo: " + _pickConceptExample("es") + "). " +
+    "Reformula tu frase usando ese concepto y NO copies el ejemplo literalmente."
   );
 }
 

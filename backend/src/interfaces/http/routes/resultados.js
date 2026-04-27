@@ -6,7 +6,9 @@ const https = require("https");
 const container = require("../../../container");
 const { canAccessUserData } = require("../middleware/authMiddleware");
 
-const acData = require("../../../alternative_conceptions.json");
+// Canonical location: backend/src/data/alternative_conceptions.json.
+// El duplicado en src/ se eliminó (md5 idéntico, era código legacy).
+const acData = require("../../../data/alternative_conceptions.json");
 const AC_MAP = acData?.alternative_conceptions || {};
 const ALLOWED_AC_IDS = Object.keys(AC_MAP);
 const ALLOWED_AC_IDS_TEXT = ALLOWED_AC_IDS.join(", ");

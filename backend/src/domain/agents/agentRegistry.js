@@ -43,6 +43,7 @@ function createAgentRegistry(deps) {
 
     classifier: new ClassifierAgent({
       classifyQuery: deps.classifyQuery,
+      debugLogger: deps.debugLogger,
     }),
 
     retrieval: new RetrievalAgent({
@@ -53,6 +54,7 @@ function createAgentRegistry(deps) {
       llmService: deps.llmService,
       buildSystemPrompt: deps.buildSystemPrompt,
       config: deps.config,
+      debugLogger: deps.debugLogger,
     }),
 
     guardrail: new GuardrailAgent({

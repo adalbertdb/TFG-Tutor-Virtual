@@ -76,9 +76,9 @@ const tutorAsksAboutR3 = "¿Qué pasa con R3 en este circuito?";
 const enCheck = en.check(tutorAsksAboutR3, enCtx);
 assert("EN check fires on '¿Qué pasa con R3?'", enCheck.violated === true);
 const enFix = en.surgicalFix(tutorAsksAboutR3, enCtx);
-assert("EN.surgicalFix preserves leak when element is NOT in correctAnswer (BUG)",
-  enFix && enFix.applied === false,
-  "redactElementMentions filters by correctAnswer, so R3 (not in [R1,R2,R4]) is NOT redacted");
+assert("EN.surgicalFix NOW redacts non-correctAnswer elements (C3 fix)",
+  enFix && enFix.applied === true,
+  "after: " + (enFix && enFix.text));
 
 const tutorAsksAboutR1 = "¿Qué pasa con R1 en este circuito?";
 const enFix2 = en.surgicalFix(tutorAsksAboutR1, enCtx);
@@ -119,11 +119,14 @@ assert("'sí' → single_word (NOT confirmation)", c6.type === "single_word", "g
 
 // ─── 6. ELEMENT_NAMING retry hint plagiarism ────────────────────────────────
 section("6. ElementNaming retry hint contains a quotable example");
-const hint = en.buildRetryHint("es");
-const hasQuotableExample = hint.includes("qué condiciones se necesitan para que circule corriente por una rama");
-assert("retry hint contains the EXACT phrase the LLM copies in production",
-  hasQuotableExample === true,
-  "this is what the LLM copies verbatim into its response, creating the loop");
+// C5: the retry hint must NOT always contain the same example phrase the LLM
+// would otherwise plagiarize. We sample 6 invocations and confirm the example
+// rotates (i.e. at least 2 distinct rendered hints across 6 samples).
+const hintSamples = new Set();
+for (let i = 0; i < 6; i++) hintSamples.add(en.buildRetryHint("es"));
+assert("retry hint rotates examples across calls (C5 fix)",
+  hintSamples.size >= 2,
+  "got " + hintSamples.size + " distinct samples in 6 calls");
 
 // ─── 7. STREAK/REPETITION DETECTION (CONTEXT AGENT) ──────────────────────────
 section("7. ContextAgent question-similarity threshold");
@@ -140,13 +143,73 @@ const repeated = ca._detectRepetition([
 ]);
 assert("_detectRepetition fires on 3 same-ish questions", repeated === true);
 
-// ─── Summary ────────────────────────────────────────────────────────────────
-const passed = results.filter(r => r.ok).length;
-const failed = results.length - passed;
-console.log("\n=== SUMMARY ===");
-console.log(passed + " passed / " + failed + " failed / " + results.length + " total");
-if (failed > 0) {
-  console.log("\nFAILED (these are confirmed foci of error):");
-  for (const r of results) if (!r.ok) console.log("  - " + r.name + (r.detail ? " :: " + r.detail : ""));
+// ─── 8. SAME-CLASSIFICATION STREAK (LOOP BREAKER, A) ─────────────────────────
+async function section8() {
+  section("8. ContextAgent._lastClassificationStreak + TutorAgent strategy hint");
+  function fakeMsg(role, classification) {
+    return {
+      role, isAssistant: () => role === "assistant",
+      metadata: classification ? { classification } : null,
+    };
+  }
+  class StubRepo {
+    constructor(msgs) { this.msgs = msgs; }
+    async getAllMessages() { return this.msgs; }
+  }
+  async function streakCase(seq) {
+    const stub = new StubRepo(seq);
+    const agent = new (class extends ContextAgent { constructor() {
+      super({ ejercicioRepo: {}, interaccionRepo: {}, messageRepo: stub, config: {} });
+    }})();
+    return agent._lastClassificationStreak("any");
+  }
+
+  const r1 = await streakCase([
+    fakeMsg("user"), fakeMsg("assistant", "wrong_answer"),
+    fakeMsg("user"), fakeMsg("assistant", "correct_no_reasoning"),
+    fakeMsg("user"), fakeMsg("assistant", "correct_no_reasoning"),
+    fakeMsg("user"), fakeMsg("assistant", "correct_no_reasoning"),
+  ]);
+  assert("streak: 3 consecutive correct_no_reasoning",
+    r1.type === "correct_no_reasoning" && r1.streak === 3, JSON.stringify(r1));
+  const r2 = await streakCase([
+    fakeMsg("assistant", "wrong_answer"),
+    fakeMsg("assistant", "correct_no_reasoning"),
+  ]);
+  assert("streak: classification change resets to 1",
+    r2.type === "correct_no_reasoning" && r2.streak === 1, JSON.stringify(r2));
+  const r3 = await streakCase([fakeMsg("user")]);
+  assert("streak: empty assistant history returns 0",
+    r3.type === null && r3.streak === 0, JSON.stringify(r3));
+
+  // TutorAgent strategy hint logic
+  const TutorAgent = require(path.join(ROOT, "src/domain/agents/tutorAgent"));
+  const tStub = new (class extends TutorAgent { constructor() {
+    super({ llmService: {}, buildSystemPrompt: () => "", config: {} });
+  }})();
+  assert("strategyHint fires for correct_no_reasoning streak>=2",
+    tStub._buildStrategyHint("correct_no_reasoning", 2, "correct_no_reasoning").includes("ESCALATE"));
+  assert("strategyHint silent for streak=1",
+    tStub._buildStrategyHint("correct_no_reasoning", 1, "correct_no_reasoning") === "");
+  assert("strategyHint silent if classification changed across turns",
+    tStub._buildStrategyHint("correct_no_reasoning", 2, "wrong_answer") === "");
+  assert("strategyHint fires for wrong_answer streak>=2",
+    tStub._buildStrategyHint("wrong_answer", 3, "wrong_answer").includes("ESCALATE"));
+  assert("strategyHint fires for dont_know streak>=2",
+    tStub._buildStrategyHint("dont_know", 2, "dont_know").includes("ESCALATE"));
 }
-process.exit(failed > 0 ? 1 : 0);
+
+// ─── Summary ────────────────────────────────────────────────────────────────
+(async function main() {
+  await section8();
+
+  const passed = results.filter(r => r.ok).length;
+  const failed = results.length - passed;
+  console.log("\n=== SUMMARY ===");
+  console.log(passed + " passed / " + failed + " failed / " + results.length + " total");
+  if (failed > 0) {
+    console.log("\nFAILED (these are confirmed foci of error):");
+    for (const r of results) if (!r.ok) console.log("  - " + r.name + (r.detail ? " :: " + r.detail : ""));
+  }
+  process.exit(failed > 0 ? 1 : 0);
+})();

@@ -29,7 +29,16 @@ class FalseConfirmationGuardrail extends IGuardrail {
     if (typeof response !== "string") return { violated: false };
 
     const lower = stripAccents(response.toLowerCase().trim());
-    const firstPart = lower.substring(0, 60);
+    // Scan the head of the response: up to the first Socratic question mark
+    // (which marks the end of the lead-in / start of the actual question)
+    // OR up to 200 characters, whichever comes first. The legacy 60-char
+    // window missed real cases like "Vamos a pensar paso a paso,
+    // considerando la Ley de Ohm. Exactamente, así es como...". Capping at
+    // the first "?" prevents false positives where a confirmation word
+    // appears INSIDE a Socratic question further down ("¿está claro?").
+    const firstQ = lower.indexOf("?");
+    const cap = firstQ >= 0 ? Math.min(firstQ, 200) : 200;
+    const firstPart = lower.slice(0, cap);
 
     for (let i = 0; i < confirmPhrases.length; i++) {
       const phrase = stripAccents(confirmPhrases[i]);
@@ -38,7 +47,7 @@ class FalseConfirmationGuardrail extends IGuardrail {
       if (includesAsWord(firstPart, phrase)) {
         // CRITICAL: is the phrase actually negated in context?
         // "No es exactamente así" contains "exactamente" but is NOT a confirmation.
-        if (isNegatedInContext(lower.substring(0, 100), phrase)) {
+        if (isNegatedInContext(firstPart, phrase)) {
           continue; // skip this match — it's a negation, not a confirmation
         }
         return {
