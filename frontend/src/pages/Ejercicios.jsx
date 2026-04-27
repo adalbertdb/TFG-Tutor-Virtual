@@ -205,6 +205,15 @@ export default function EjerciciosPage() {
       if (nivel > 0 && ejercicio.nivel != nivel) return false;
       return true;
     });
+
+    return filtered.sort((a, b) => {
+      const na = extractExerciseNumber(a.titulo);
+      const nb = extractExerciseNumber(b.titulo);
+      if (na !== nb) return na - nb;
+      const ca = (a.concepto || "").localeCompare(b.concepto || "");
+      if (ca !== 0) return ca;
+      return (a.nivel || 0) - (b.nivel || 0);
+    });
   }, [allEjercicios, asig, conceptosSeleccionados, nivel]);
 
   const filtrosActivos = useMemo(
