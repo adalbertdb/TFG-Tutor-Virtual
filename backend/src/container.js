@@ -66,10 +66,47 @@ const container = {
     const { loadConceptPatternsFromKG } = require("./domain/services/rag/guardrails");
     try {
       loadKG();
-      this.kgConceptPatterns = loadConceptPatternsFromKG(getAllEntries());
-      console.log("[Container] Loaded " + this.kgConceptPatterns.length + " KG concept patterns");
+      const kgEntries = getAllEntries();
+      this.kgConceptPatterns = loadConceptPatternsFromKG(kgEntries);
+      const acsPrimary = kgEntries.filter(e => e.AC).length;
+      const acsSecondary = kgEntries.filter(e => e["AC.1"]).length;
+      const noAc = kgEntries.length - acsPrimary;
+      console.log("[Container] KG: " + kgEntries.length + " entries, " +
+        acsPrimary + " w/ primary AC, " + acsSecondary + " w/ secondary AC, " +
+        noAc + " w/o AC, " + this.kgConceptPatterns.length + " concept patterns");
     } catch (err) {
       console.warn("[Container] KG concept patterns not available:", err.message);
+    }
+
+    // Health check: verify Chroma collections are populated. Non-fatal —
+    // the system can still serve traffic with BM25 in-memory only, but we
+    // log a clear warning so a forgotten ingestion is visible at boot.
+    try {
+      const { getCollection } = require("./infrastructure/vectordb/chromaClient");
+      const expectedCollections = ["exercise_1", "exercise_3", "exercise_4",
+        "exercise_5", "exercise_6", "exercise_7", "knowledge_graph"];
+      const counts = {};
+      let totalDocs = 0;
+      for (const name of expectedCollections) {
+        try {
+          const col = await getCollection(name);
+          const c = await col.count();
+          counts[name] = c;
+          totalDocs += c;
+        } catch (e) {
+          counts[name] = "ERR(" + (e.code || e.message || "unknown") + ")";
+        }
+      }
+      if (totalDocs === 0) {
+        console.warn("[Container] WARNING: ChromaDB collections look empty. " +
+          "Run 'node src/infrastructure/vectordb/ingest.js' to populate them. " +
+          "Status: " + JSON.stringify(counts));
+      } else {
+        console.log("[Container] Chroma collections: " + JSON.stringify(counts));
+      }
+    } catch (err) {
+      console.warn("[Container] Chroma health check skipped: " + err.message +
+        " (BM25 in-memory will still work, semantic search disabled)");
     }
 
     // Guardrail pipeline (parallel + surgical-first + consolidated retry + budget)

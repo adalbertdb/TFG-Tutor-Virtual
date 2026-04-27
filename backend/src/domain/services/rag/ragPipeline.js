@@ -77,11 +77,22 @@ Socratic questions: "¿Qué ocurre con la corriente cuando un componente está c
     if (entry.socraticQuestions) {
       text = text + "Socratic questions: \"" + entry.socraticQuestions + "\"\n";
     }
-    if (entry.acName) {
-      text = text + "Alternative conception: \"" + entry.acName + "\"\n";
-    }
-    if (entry.acDescription) {
-      text = text + "AC description: \"" + entry.acDescription + "\"\n";
+    // Render every AC associated with this KG entry. Some entries carry two
+    // alternative conceptions on the same concept; both are pedagogically
+    // relevant. Falls back to the legacy primary fields when the new
+    // alternativeConceptions array is missing (defensive).
+    const acs = Array.isArray(entry.alternativeConceptions) && entry.alternativeConceptions.length > 0
+      ? entry.alternativeConceptions
+      : (entry.acName || entry.acDescription
+          ? [{ ac: entry.ac, acName: entry.acName, acDescription: entry.acDescription }]
+          : []);
+    for (let a = 0; a < acs.length; a++) {
+      if (acs[a].acName) {
+        text = text + "Alternative conception: \"" + acs[a].acName + "\"\n";
+      }
+      if (acs[a].acDescription) {
+        text = text + "AC description: \"" + acs[a].acDescription + "\"\n";
+      }
     }
     text = text + "\n";
   }
