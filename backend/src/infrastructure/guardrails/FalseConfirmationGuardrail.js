@@ -1,7 +1,7 @@
 "use strict";
 
 const IGuardrail = require("../../domain/ports/services/IGuardrail");
-const { stripAccents } = require("../../domain/services/text/accentNormalizer");
+const { stripAccents, includesAsWord } = require("../../domain/services/text/accentNormalizer");
 const { isNegatedInContext } = require("../../domain/services/text/negationDetector");
 const { getAllPatterns, confirmPhrases: confirmDict, getFalseConfirmationInstruction, getRandomIntermediatePhrase } = require("../../domain/services/languageManager");
 
@@ -33,7 +33,9 @@ class FalseConfirmationGuardrail extends IGuardrail {
 
     for (let i = 0; i < confirmPhrases.length; i++) {
       const phrase = stripAccents(confirmPhrases[i]);
-      if (firstPart.includes(phrase)) {
+      // Word-boundary match: prevents English "correct" from matching inside
+      // Spanish "correctas", and similar cross-language false positives.
+      if (includesAsWord(firstPart, phrase)) {
         // CRITICAL: is the phrase actually negated in context?
         // "No es exactamente así" contains "exactamente" but is NOT a confirmation.
         if (isNegatedInContext(lower.substring(0, 100), phrase)) {

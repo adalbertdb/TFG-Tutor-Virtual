@@ -71,7 +71,10 @@ router.post("/chat/stream", async function (req, res, next) {
   const reqId = trace.traceRequestStart("orchestrator", {
     userId: userId, exerciseId: exerciseId, interaccionId: interaccionId, userMessage: userMessage,
   });
-  const budgetMs = Number(process.env.ORCHESTRATOR_BUDGET_MS || 45000);
+  // Default 30s. Lower than the previous 45s so we fail fast when Ollama is
+  // slow under load — better UX to show a fallback than to keep the user
+  // staring at a spinner that ultimately times out at the SSE layer too.
+  const budgetMs = Number(process.env.ORCHESTRATOR_BUDGET_MS || 30000);
   trace.traceBudgetSet(reqId, budgetMs);
 
   // Set SSE headers
@@ -126,16 +129,26 @@ router.post("/chat/stream", async function (req, res, next) {
       return;
     }
 
-    // Send response as a single chunk (same as ragMiddleware)
-    const responseText = ctx.finalResponse || ctx.llmResponse || "";
-    if (responseText) {
-      sseSend(res, { chunk: responseText });
-      trace.traceResponse(reqId, {
-        len: responseText.length,
-        containsFIN: responseText.includes(FIN_TOKEN),
-        response: responseText,
-      });
+    // Send response as a single chunk (same as ragMiddleware).
+    // Belt-and-suspenders: orchestrator's catch already fills finalResponse on
+    // error, but if anything still slips through with an empty payload, send a
+    // localized fallback so the chat never goes silent on the user.
+    let responseText = ctx.finalResponse || ctx.llmResponse || "";
+    if (!responseText) {
+      const lang = ctx.lang || "es";
+      const fallbacks = {
+        es: "Disculpa, el tutor está tardando demasiado en responder ahora mismo. ¿Puedes reformular tu mensaje o intentarlo de nuevo en un momento?",
+        val: "Disculpa, el tutor està tardant massa a respondre ara mateix. Pots reformular el teu missatge o tornar-ho a provar d'ací a un moment?",
+        en: "Sorry, the tutor is taking too long to respond right now. Could you rephrase your message or try again in a moment?",
+      };
+      responseText = fallbacks[lang] || fallbacks.es;
     }
+    sseSend(res, { chunk: responseText });
+    trace.traceResponse(reqId, {
+      len: responseText.length,
+      containsFIN: responseText.includes(FIN_TOKEN),
+      response: responseText,
+    });
 
     endSSE(res, hb);
 

@@ -140,8 +140,30 @@ class TutoringOrchestrator {
     } catch (error) {
       console.error("[Orchestrator] Pipeline error:", error.message);
       ctx.error = error;
+      // Always set a friendly fallback so the SSE handler has something to
+      // send. The previous behavior left ctx.finalResponse empty on LLM
+      // timeouts, which made the chat stay blank with no signal to the user.
+      if (!ctx.finalResponse) {
+        ctx.finalResponse = this._buildFallbackMessage(ctx);
+        ctx.fallbackUsed = true;
+      }
       return ctx;
     }
+  }
+
+  /**
+   * Friendly message shown when the pipeline fails (typically LLM timeout
+   * against the UPV Ollama server). Localized to the conversation language.
+   */
+  _buildFallbackMessage(ctx) {
+    const lang = ctx && ctx.lang;
+    if (lang === "en") {
+      return "Sorry, the tutor is taking too long to respond right now. Could you rephrase your message or try again in a moment?";
+    }
+    if (lang === "val") {
+      return "Disculpa, el tutor està tardant massa a respondre ara mateix. Pots reformular el teu missatge o tornar-ho a provar d'ací a un moment?";
+    }
+    return "Disculpa, el tutor está tardando demasiado en responder ahora mismo. ¿Puedes reformular tu mensaje o intentarlo de nuevo en un momento?";
   }
 
   /**
