@@ -15,8 +15,9 @@ RUN npm ci --ignore-scripts
 COPY frontend/ .
 
 # Write .env for Vite build (Vite reads these at build time)
-RUN printf "VITE_BASE_PATH=%s\nVITE_BACKEND_URL=%s\nVITE_DEV_BYPASS_AUTH=%s\n" \
-    "${VITE_BASE_PATH}" "${VITE_BACKEND_URL}" "${VITE_DEV_BYPASS_AUTH}" > .env
+RUN echo "VITE_BASE_PATH=${VITE_BASE_PATH}" > .env && \
+    echo "VITE_BACKEND_URL=${VITE_BACKEND_URL}" >> .env && \
+    echo "VITE_DEV_BYPASS_AUTH=${VITE_DEV_BYPASS_AUTH}" >> .env
 
 RUN npm run build
 

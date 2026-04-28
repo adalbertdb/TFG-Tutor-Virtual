@@ -1,6 +1,6 @@
-# Docker Deployment Guide — Tutor Socratico
+# Docker Deployment Guide — Tutor Socratico (Dokploy)
 
-Despliegue en servidor Ubuntu local con Dockploy (Traefik).
+Despliegue en servidor Ubuntu con Dokploy y GitHub.
 
 ---
 
@@ -13,216 +13,279 @@ sudo apt install -y docker.io docker-compose-v2
 
 # Iniciar Docker
 sudo systemctl enable --now docker
-
-# (Opcional) Ejecutar docker sin sudo
-sudo usermod -aG docker $USER
-# Cerrar sesion y volver a entrar para que aplique
-```
-
-### Dockploy
-
-Dockploy gestiona Traefik automaticamente. Asegurate de que Dockploy este instalado y funcionando en el servidor antes de desplegar.
-
----
-
-## 2. Preparar el servidor
-
-### 2.1 Clonar el repositorio
-
-```bash
-git clone https://github.com/irenemg8/TFG-Tutor-Virtual.git
-cd TFG-Tutor-Virtual
-```
-
-### 2.2 Configurar variables de entorno
-
-```bash
-cp .env.example .env
-nano .env
-```
-
-Valores obligatorios a cambiar:
-
-| Variable | Descripcion |
-|---|---|
-| `PG_PASSWORD` | Contraseña para PostgreSQL |
-| `SESSION_SECRET` | String aleatorio largo (`openssl rand -hex 32`) |
-| `OAUTH_CLIENT_SECRET` | Proporcionado por el admin de CAS UPV |
-
-### 2.3 Generar secrets
-
-```bash
-# Session secret
-openssl rand -hex 32
-
-# PostgreSQL password
-openssl rand -hex 16
 ```
 
 ---
 
-## 3. Desplegar con Dockploy
-
-### 3.1 Build
+## 2. Instalar Dokploy
 
 ```bash
-sudo docker compose build
+curl -sSL https://dokploy.com/install.sh | bash
 ```
 
-### 3.2 Iniciar servicios
-
-```bash
-sudo docker compose up -d
+Accede a la UI de Dokploy:
+```
+http://<IP_DEL_SERVIDOR>:3000
 ```
 
-Dockploy detectara el contenedor `app` por las labels de Traefik y configurara automaticamente:
-- HTTPS con certificado Let's Encrypt
-- Routing para `tutor-socratico.gnd.upv.es`
-- Headers de seguridad
+Configura la cuenta admin en la primera visita.
 
-### 3.3 Verificar
+---
+
+## 3. Configurar GitHub en Dokploy
+
+1. Ve a **Git Sources** en Dokploy
+2. Añade tu cuenta GitHub (o la organizacion)
+3. Autoriza a Dokploy a acceder al repositorio `irenemg8/TFG-Tutor-Virtual`
+
+---
+
+## 4. Crear el proyecto en Dokploy
+
+### 4.1 Crear Docker Compose
+
+1. Ve a **Projects** → **Create Project**
+2. Selecciona **Docker Compose**
+3. Nombre: `tutor-socratico`
+4. Source: Selecciona tu repo de GitHub
+5. Branch: `main`
+6. Compose Path: `docker-compose.yml`
+7. Guarda
+
+### 4.2 Variables de entorno
+
+Ve a la pestaña **Environment** del proyecto y añade todas las variables del archivo `.env.example`:
+
+| Variable | Valor ejemplo | Requerido |
+|---|---|---|
+| `PG_USER` | `tutor` | Si |
+| `PG_PASSWORD` | *(generar)* | **Si** |
+| `PG_DB` | `tutorvirtual` | Si |
+| `SESSION_SECRET` | *(generar)* | **Si** |
+| `OAUTH_CLIENT_SECRET` | *(proporcionado por CAS)* | **Si** |
+| `VITE_BASE_PATH` | *(vacio)* | No |
+| `VITE_BACKEND_URL` | *(vacio)* | No |
+
+Generar secrets:
+```bash
+openssl rand -hex 32  # SESSION_SECRET
+openssl rand -hex 16  # PG_PASSWORD
+```
+
+Dokploy guarda estas variables en un archivo `.env` junto al `docker-compose.yml`.
+
+### 4.3 Configurar dominio
+
+Ve a la pestaña **Domains**:
+
+1. Click **Add Domain**
+2. Host: `tutor-socratico.gnd.upv.es`
+3. Service: `app` (el contenedor que expone puerto 3001)
+4. Port: `3001`
+5. Guarda
+
+Dokploy añade automaticamente:
+- Labels de Traefik para el routing
+- HTTPS con Let's Encrypt
+- Redireccion HTTP → HTTPS
+
+**No añadir labels de Traefik manualmente** en el `docker-compose.yml`.
+
+### 4.4 Auto Deploy (opcional pero recomendado)
+
+Ve a la pestaña **Deployments** → **Auto Deploy**:
+
+1. Copia la URL del webhook
+2. En GitHub repo → Settings → Webhooks → Add webhook
+3. Payload URL: *(la URL de Dokploy)*
+4. Content type: `application/json`
+5. Events: **Push**
+6. Guarda
+
+Ahora cada `git push` a `main` despliega automaticamente.
+
+---
+
+## 5. Primer despliegue
+
+### 5.1 Deploy
+
+En Dokploy, click **Deploy**.
+
+Dokploy hará:
+1. `git clone` del repo
+2. `docker compose build`
+3. `docker compose up -d`
+4. Configurar Traefik con el dominio
+
+### 5.2 Verificar
 
 ```bash
-# Estado de contenedores
-sudo docker compose ps
+# Ver logs en Dokploy UI (pestaña Logs)
+# O via SSH:
+sudo docker logs tutor-socratico-app
 
-# Logs en vivo
-sudo docker compose logs -f app
-
-# Health check
+# Health check interno
 curl http://localhost:3001/api/health
 ```
 
-### 3.4 Ingestar datos en ChromaDB (primera vez)
+### 5.3 Ingestar datos en ChromaDB (primera vez)
+
+Desde Dokploy UI → pestaña **Advanced** → ejecutar comando:
 
 ```bash
-sudo docker compose exec app node backend/src/infrastructure/vectordb/ingest.js
+node backend/src/infrastructure/vectordb/ingest.js
+```
+
+O via SSH:
+```bash
+sudo docker exec tutor-socratico-app node backend/src/infrastructure/vectordb/ingest.js
 ```
 
 ---
 
-## 4. Traefik (gestionado por Dockploy)
+## 6. URLs del despliegue
 
-No necesitas configurar Nginx ni Traefik manualmente. Dockploy gestiona:
+| Servicio | URL |
+|---|---|
+| Frontend | `https://tutor-socratico.gnd.upv.es/` |
+| API health | `https://tutor-socratico.gnd.upv.es/api/health` |
+| Auth callback | `https://tutor-socratico.gnd.upv.es/api/auth/cas/callback` |
 
-- **Routing automatico** via labels Docker
-- **HTTPS** con certresolver `letsencrypt`
-- **Headers de seguridad** configurados en las labels
+---
 
-Si necesitas ajustar algo, modifica las labels `traefik.*` en `docker-compose.yml`.
+## 7. Flujo de trabajo con GitHub
 
-### Verificar Traefik
+```
+Developer
+    │
+    ▼ git push main
+┌─────────────┐
+│   GitHub    │
+└──────┬──────┘
+       │ webhook
+       ▼
+┌─────────────┐
+│   Dokploy   │
+│  (Docker)   │
+└──────┬──────┘
+       │ git clone + build + up
+       ▼
+┌─────────────┐
+│   Traefik   │  :443 HTTPS
+└──────┬──────┘
+       │
+       ▼
+┌─────────────┐
+│    App      │
+│  :3001      │
+└──┬──────┬───┘
+   │      │
+   ▼      ▼
+┌──────┐ ┌──────────┐
+│  Pg  │ │ ChromaDB │
+└──────┘ └──────────┘
+```
+
+**Cada push a main:**
+1. GitHub envia webhook a Dokploy
+2. Dokploy hace `git clone` del repo
+3. `docker compose build` (usa cache si no hay cambios)
+4. `docker compose up -d` (rolling update)
+5. Traefik actualiza el routing
+
+---
+
+## 8. Comandos utiles
 
 ```bash
-# Ver rutas configuradas
-sudo docker exec dockploy-traefik traefik healthcheck --ping
+# Ver estado de contenedores
+sudo docker compose ps
 
-# O via dashboard (si esta habilitado)
-# http://<servidor>:8080/dashboard/
+# Logs en vivo (desde Dokploy UI o SSH)
+sudo docker logs -f tutor-socratico-app
+
+# Reiniciar servicio
+sudo docker restart tutor-socratico-app
+
+# Ejecutar comando dentro del contenedor
+sudo docker exec -it tutor-socratico-app sh
+
+# Backup de PostgreSQL
+sudo docker exec tutor-socratico-postgres pg_dump -U tutor tutorvirtual > backup.sql
 ```
 
 ---
 
-## 5. Comandos utiles
+## 9. Troubleshooting
+
+### La app no arranca
 
 ```bash
 # Ver logs
-sudo docker compose logs -f app
-sudo docker compose logs -f postgres
-sudo docker compose logs -f chromadb
+cd /opt/dokploy/applications/tutor-socratico/code && sudo docker compose logs app
+```
 
-# Reiniciar un servicio
-sudo docker compose restart app
+### PostgreSQL no esta listo
 
-# Detener todo
-sudo docker compose down
+El contenedor `app` espera a que Postgres pase el healthcheck. Si tarda, revisa logs:
+```bash
+sudo docker logs tutor-socratico-postgres
+```
 
-# Detener + borrar volumenes (CUIDADO: borra datos)
-sudo docker compose down -v
+### ChromaDB vacio
 
-# Ejecutar comando dentro del contenedor
-sudo docker compose exec app sh
+```bash
+sudo docker exec tutor-socratico-app node backend/src/infrastructure/vectordb/ingest.js
+```
 
-# Reconstruir tras cambios de codigo
-sudo docker compose build --no-cache && sudo docker compose up -d
+### Error de conexion a Ollama
+
+```bash
+sudo docker exec tutor-socratico-app wget -qO- https://ollama.gti-ia.upv.es:443/api/tags
+```
+
+### Traefik no enruta
+
+1. Verificar dominio configurado en Dokploy UI (pestaña Domains)
+2. Verificar que el contenedor `app` esta en la red `dokploy-network`
+3. Ver logs de Traefik:
+   ```bash
+   sudo docker logs traefik
+   ```
+
+### Error de CAS OAuth2
+
+Verificar que `OAUTH_REDIRECT_URI` coincide exactamente con la registrada en CAS:
+```
+https://tutor-socratico.gnd.upv.es/api/auth/cas/callback
 ```
 
 ---
 
-## 6. Arquitectura
+## 10. Arquitectura
 
 ```
 Internet
   │
   ▼
 ┌─────────────┐
-│   Traefik   │  :443 (HTTPS) — gestionado por Dockploy
-│  (Dockploy) │
+│   Traefik   │  :443 HTTPS (gestionado por Dokploy)
+│  (Docker)   │
 └──────┬──────┘
-       │ Docker labels
+       │
        ▼
 ┌─────────────┐
-│    App      │  :3001 (interno)
-│  (Node.js)  │  ← Sirve frontend estatico + API
+│    App      │  :3001 (Docker Compose)
+│  (Node.js)  │
 └──┬──────┬───┘
    │      │
    ▼      ▼
 ┌──────┐ ┌──────────┐
 │  Pg  │ │ ChromaDB │
-│ :5432│ │  :8000   │
 └──────┘ └──────────┘
 ```
 
 **Servicios externos:**
-- **Ollama**: Cluster UPV (`ollama.gti-ia.upv.es`) o local
+- **Ollama**: Cluster UPV (`ollama.gti-ia.upv.es`)
 - **CAS UPV**: Autenticacion OAuth2
-
----
-
-## 7. Troubleshooting
-
-### La app no arranca
-
-```bash
-sudo docker compose logs app
-```
-
-### PostgreSQL no esta listo
-
-El contenedor `app` espera a que Postgres pase el healthcheck. Si tarda:
-
-```bash
-sudo docker compose logs postgres
-```
-
-### ChromaDB vacio
-
-```bash
-sudo docker compose exec app node backend/src/infrastructure/vectordb/ingest.js
-```
-
-### Error de conexion a Ollama
-
-Verificar que `OLLAMA_API_URL_UPV` es accesible desde el contenedor:
-
-```bash
-sudo docker compose exec app wget -qO- https://ollama.gti-ia.upv.es:443/api/tags
-```
-
-### Error de CAS OAuth2
-
-Verificar que `OAUTH_REDIRECT_URI` coincide exactamente con la registrada en CAS:
-
-```
-https://tutor-socratico.gnd.upv.es/api/auth/cas/callback
-```
-
-### Traefik no enruta el trafico
-
-```bash
-# Verificar que las labels estan aplicadas
-sudo docker inspect tutor-socratico-app | grep -A 50 Labels
-
-# Ver logs de Traefik
-sudo docker logs dockploy-traefik 2>&1 | tail -50
-```

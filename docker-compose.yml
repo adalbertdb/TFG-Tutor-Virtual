@@ -7,15 +7,15 @@ services:
     container_name: tutor-socratico-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ${PG_USER:-tutor}
+      POSTGRES_USER: ${PG_USER:-postgres}
       POSTGRES_PASSWORD: ${PG_PASSWORD:?PG_PASSWORD is required}
       POSTGRES_DB: ${PG_DB:-tutorvirtual}
     volumes:
       - pg_data:/var/lib/postgresql/data
     networks:
-      - default
+      - dokploy-network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${PG_USER:-tutor} -d ${PG_DB:-tutorvirtual}"]
+      test: ["CMD-SHELL", "pg_isready -U ${PG_USER:-postgres} -d ${PG_DB:-tutorvirtual}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -35,7 +35,7 @@ services:
       CHROMA_SERVER_HTTP_PORT: 8000
       ANONYMIZED_TELEMETRY: "False"
     networks:
-      - default
+      - dokploy-network
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
       interval: 15s
@@ -46,13 +46,18 @@ services:
   # ==========================================
   # Backend + Frontend (app principal)
   # ==========================================
+  #
+  # NOTA: Dokploy gestiona el routing HTTPS automaticamente.
+  # NO añadir labels de Traefik manualmente aqui.
+  # Configurar el dominio en la UI de Dokploy (pestaña Domains).
+  #
   app:
     build:
       context: .
       dockerfile: Dockerfile
       args:
-        VITE_BASE_PATH: ${VITE_BASE_PATH:-/v2}
-        VITE_BACKEND_URL: ${VITE_BACKEND_URL:-/v2}
+        VITE_BASE_PATH: ${VITE_BASE_PATH:-}
+        VITE_BACKEND_URL: ${VITE_BACKEND_URL:-}
         VITE_DEV_BYPASS_AUTH: ${VITE_DEV_BYPASS_AUTH:-false}
     container_name: tutor-socratico-app
     restart: unless-stopped
@@ -64,7 +69,7 @@ services:
     environment:
       # Database
       DATABASE_TYPE: postgresql
-      PG_CONNECTION_STRING: postgresql://${PG_USER:-tutor}:${PG_PASSWORD:?PG_PASSWORD is required}@postgres:5432/${PG_DB:-tutorvirtual}
+      PG_CONNECTION_STRING: postgresql://${PG_USER:-postgres}:${PG_PASSWORD:?PG_PASSWORD is required}@postgres:5432/${PG_DB:-tutorvirtual}
       # General
       PORT: 3001
       NODE_ENV: production
@@ -113,35 +118,19 @@ services:
       - app_logs:/app/backend/logs
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    # Traefik labels (Dockploy)
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.tutor-socratico.rule=Host(`tutor-socratico.gnd.upv.es`)"
-      - "traefik.http.routers.tutor-socratico.entrypoints=websecure"
-      - "traefik.http.routers.tutor-socratico.tls.certresolver=letsencrypt"
-      - "traefik.http.routers.tutor-socratico.tls=true"
-      - "traefik.http.routers.tutor-socratico.middlewares=tutor-socratico-headers"
-      - "traefik.http.services.tutor-socratico.loadbalancer.server.port=3001"
-      # Security headers
-      - "traefik.http.middlewares.tutor-socratico-headers.headers.framedeny=true"
-      - "traefik.http.middlewares.tutor-socratico-headers.headers.contenttypenosniff=true"
-      - "traefik.http.middlewares.tutor-socratico-headers.headers.browserxssfilter=true"
-      - "traefik.http.middlewares.tutor-socratico-headers.headers.referrerpolicy=strict-origin-when-cross-origin"
-      - "traefik.http.middlewares.tutor-socratico-headers.headers.stsincludesubdomains=true"
-      - "traefik.http.middlewares.tutor-socratico-headers.headers.stspreload=true"
-      - "traefik.http.middlewares.tutor-socratico-headers.headers.stsseconds=31536000"
-      # WebSocket support (workflow monitor SSE)
-      - "traefik.http.routers.tutor-socratico-ws.rule=Host(`tutor-socratico.gnd.upv.es`) && PathPrefix(`/ws/`)"
-      - "traefik.http.routers.tutor-socratico-ws.entrypoints=websecure"
-      - "traefik.http.routers.tutor-socratico-ws.tls.certresolver=letsencrypt"
-      - "traefik.http.routers.tutor-socratico-ws.service=tutor-socratico"
-      - "traefik.http.routers.tutor-socratico-ws.middlewares=tutor-socratico-ws"
-      - "traefik.http.middlewares.tutor-socratico-ws.headers.customrequestheaders.Connection=Upgrade"
-      - "traefik.http.middlewares.tutor-socratico-ws.headers.customrequestheaders.Upgrade=websocket"
-      # Long timeouts for LLM SSE responses
-      - "traefik.http.services.tutor-socratico.loadbalancer.server.scheme=http"
+    # Expose (not ports) — Dokploy/Traefik handles external access
+    expose:
+      - 3001
+    networks:
+      - dokploy-network
 
 volumes:
   pg_data:
   chroma_data:
   app_logs:
+
+# Dokploy adds this network automatically. If using Isolated Deployments,
+# Dokploy creates a dedicated network per deployment and you can omit this.
+networks:
+  dokploy-network:
+    external: true
