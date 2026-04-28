@@ -1,0 +1,55 @@
+# Git
+.git/
+.gitignore
+
+# Node
+node_modules/
+**/node_modules/
+
+# Env files (never bake secrets into images)
+.env
+*.env
+.env.*
+!.env.example
+
+# Logs
+logs/
+*.log
+*.jsonl
+
+# Build artifacts (we build inside Docker)
+dist/
+build/
+coverage/
+
+# Local DB data
+chroma/
+*.sqlite3
+
+# Python / evaluation
+evaluation/
+__pycache__/
+*.pyc
+
+# Docs (not needed at runtime)
+docs/
+material-complementario/llm/instrucciones-socraticas/
+material-complementario/llm/contextos-ejercicios/
+material-complementario/llm/datos/
+
+# Scripts (not needed at runtime)
+backend/src/scripts/
+*.ps1
+
+# Workflow (separate service, not baked into backend image)
+workflow/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+
+# Claude / AI state
+.claude/

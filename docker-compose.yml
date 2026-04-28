@@ -1,0 +1,147 @@
+services:
+  # ==========================================
+  # PostgreSQL — sesiones y datos
+  # ==========================================
+  postgres:
+    image: postgres:17-alpine
+    container_name: tutor-socratico-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${PG_USER:-tutor}
+      POSTGRES_PASSWORD: ${PG_PASSWORD:?PG_PASSWORD is required}
+      POSTGRES_DB: ${PG_DB:-tutorvirtual}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    networks:
+      - default
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PG_USER:-tutor} -d ${PG_DB:-tutorvirtual}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ==========================================
+  # ChromaDB — vector search (RAG)
+  # ==========================================
+  chromadb:
+    image: chromadb/chroma:latest
+    container_name: tutor-socratico-chromadb
+    restart: unless-stopped
+    volumes:
+      - chroma_data:/chroma/chroma
+    environment:
+      CHROMA_SERVER_HOST: 0.0.0.0
+      CHROMA_SERVER_HTTP_PORT: 8000
+      ANONYMIZED_TELEMETRY: "False"
+    networks:
+      - default
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # ==========================================
+  # Backend + Frontend (app principal)
+  # ==========================================
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VITE_BASE_PATH: ${VITE_BASE_PATH:-/v2}
+        VITE_BACKEND_URL: ${VITE_BACKEND_URL:-/v2}
+        VITE_DEV_BYPASS_AUTH: ${VITE_DEV_BYPASS_AUTH:-false}
+    container_name: tutor-socratico-app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      chromadb:
+        condition: service_healthy
+    environment:
+      # Database
+      DATABASE_TYPE: postgresql
+      PG_CONNECTION_STRING: postgresql://${PG_USER:-tutor}:${PG_PASSWORD:?PG_PASSWORD is required}@postgres:5432/${PG_DB:-tutorvirtual}
+      # General
+      PORT: 3001
+      NODE_ENV: production
+      SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET is required}
+      SERVER_BASE_URL: https://tutor-socratico.gnd.upv.es
+      # Frontend / CORS
+      FRONTEND_BASE_URL: https://tutor-socratico.gnd.upv.es
+      WORKFLOW_BASE_URL: ""
+      # Ollama
+      LLM_MODE: ${LLM_MODE:-upv}
+      OLLAMA_API_URL_UPV: ${OLLAMA_API_URL_UPV:-https://ollama.gti-ia.upv.es:443}
+      OLLAMA_API_URL_LOCAL: http://host.docker.internal:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:latest}
+      OLLAMA_NUM_CTX: ${OLLAMA_NUM_CTX:-4096}
+      OLLAMA_NUM_PREDICT: ${OLLAMA_NUM_PREDICT:-256}
+      OLLAMA_TEMPERATURE: ${OLLAMA_TEMPERATURE:-0.4}
+      HISTORY_MAX_MESSAGES: ${HISTORY_MAX_MESSAGES:-6}
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-60m}
+      OLLAMA_STREAM_MAX_MS: ${OLLAMA_STREAM_MAX_MS:-1800000}
+      OLLAMA_TIMEOUT_MS: ${OLLAMA_TIMEOUT_MS:-180000}
+      OLLAMA_CLASSIFIER_MODEL: ${OLLAMA_CLASSIFIER_MODEL:-qwen2.5:latest}
+      OLLAMA_CLASSIFIER_TIMEOUT_MS: ${OLLAMA_CLASSIFIER_TIMEOUT_MS:-120000}
+      OLLAMA_INSECURE_TLS: ${OLLAMA_INSECURE_TLS:-0}
+      # ChromaDB
+      CHROMA_URL: http://chromadb:8000
+      # Debug
+      DEBUG_OLLAMA: ${DEBUG_OLLAMA:-0}
+      DEBUG_PIPELINE: ${DEBUG_PIPELINE:-0}
+      AUDIT_LOG: ${AUDIT_LOG:-1}
+      DEBUG_DUMP_CONTEXT: ${DEBUG_DUMP_CONTEXT:-0}
+      DEBUG_DUMP_PATH: ""
+      # Hexagonal
+      USE_ORCHESTRATOR: ${USE_ORCHESTRATOR:-1}
+      ORCHESTRATOR_BUDGET_MS: ${ORCHESTRATOR_BUDGET_MS:-45000}
+      GUARDRAIL_BUDGET_MS: ${GUARDRAIL_BUDGET_MS:-45000}
+      GUARDRAIL_MIN_RETRY_BUDGET_MS: ${GUARDRAIL_MIN_RETRY_BUDGET_MS:-10000}
+      # CAS OAuth2
+      CAS_BASE_URL: ${CAS_BASE_URL:-https://caspre.upv.es/cas}
+      OAUTH_CLIENT_ID: ${OAUTH_CLIENT_ID:-TUTOR-VIRTUAL}
+      OAUTH_CLIENT_SECRET: ${OAUTH_CLIENT_SECRET:?OAUTH_CLIENT_SECRET is required}
+      OAUTH_REDIRECT_URI: https://tutor-socratico.gnd.upv.es/api/auth/cas/callback
+      OAUTH_SCOPES: ${OAUTH_SCOPES:-profile email}
+      # Auth bypass (MUST be false in production)
+      DEV_BYPASS_AUTH: "false"
+    volumes:
+      - app_logs:/app/backend/logs
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # Traefik labels (Dockploy)
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.tutor-socratico.rule=Host(`tutor-socratico.gnd.upv.es`)"
+      - "traefik.http.routers.tutor-socratico.entrypoints=websecure"
+      - "traefik.http.routers.tutor-socratico.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.tutor-socratico.tls=true"
+      - "traefik.http.routers.tutor-socratico.middlewares=tutor-socratico-headers"
+      - "traefik.http.services.tutor-socratico.loadbalancer.server.port=3001"
+      # Security headers
+      - "traefik.http.middlewares.tutor-socratico-headers.headers.framedeny=true"
+      - "traefik.http.middlewares.tutor-socratico-headers.headers.contenttypenosniff=true"
+      - "traefik.http.middlewares.tutor-socratico-headers.headers.browserxssfilter=true"
+      - "traefik.http.middlewares.tutor-socratico-headers.headers.referrerpolicy=strict-origin-when-cross-origin"
+      - "traefik.http.middlewares.tutor-socratico-headers.headers.stsincludesubdomains=true"
+      - "traefik.http.middlewares.tutor-socratico-headers.headers.stspreload=true"
+      - "traefik.http.middlewares.tutor-socratico-headers.headers.stsseconds=31536000"
+      # WebSocket support (workflow monitor SSE)
+      - "traefik.http.routers.tutor-socratico-ws.rule=Host(`tutor-socratico.gnd.upv.es`) && PathPrefix(`/ws/`)"
+      - "traefik.http.routers.tutor-socratico-ws.entrypoints=websecure"
+      - "traefik.http.routers.tutor-socratico-ws.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.tutor-socratico-ws.service=tutor-socratico"
+      - "traefik.http.routers.tutor-socratico-ws.middlewares=tutor-socratico-ws"
+      - "traefik.http.middlewares.tutor-socratico-ws.headers.customrequestheaders.Connection=Upgrade"
+      - "traefik.http.middlewares.tutor-socratico-ws.headers.customrequestheaders.Upgrade=websocket"
+      # Long timeouts for LLM SSE responses
+      - "traefik.http.services.tutor-socratico.loadbalancer.server.scheme=http"
+
+volumes:
+  pg_data:
+  chroma_data:
+  app_logs:
